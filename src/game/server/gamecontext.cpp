@@ -194,6 +194,61 @@ bool CGameContext::EmulateBug(int Bug)
 	return m_MapBugs.Contains(Bug);
 }
 
+CTuningParams *CGameContext::Tuning(int ClientID, int Zone)
+{
+	if(GetPlayerChar(ClientID))
+		return GetPlayerChar(ClientID)->Tuning(Zone);
+	if(Zone != 0)
+		return &TuningList()[Zone];
+	return &m_Tuning;
+}
+
+bool CGameContext::SetLockedTune(LOCKED_TUNES *pLockedTunings, CLockedTune Tune)
+{
+	const char *pParam = Tune.m_aParam;
+	float NewValue = Tune.m_Value;
+
+	float GlobalValue;
+	if(!m_Tuning.Get(pParam, &GlobalValue))
+		return false;
+
+	for(auto it = pLockedTunings->begin(); it != pLockedTunings->end(); ++it)
+	{
+		if(str_comp_nocase(it->m_aParam, pParam) == 0)
+		{
+			if(NewValue == GlobalValue)
+				pLockedTunings->erase(it);
+			else
+				it->m_Value = NewValue;
+			return true;
+		}
+	}
+
+	CLockedTune LockedTune(pParam, NewValue);
+	pLockedTunings->push_back(LockedTune);
+	return true;
+}
+
+void CGameContext::ApplyTuneLock(LOCKED_TUNES *pLockedTunings, int TuneLock)
+{
+	if(TuneLock < 0 || TuneLock >= NUM_TUNEZONES)
+	{
+		pLockedTunings->clear();
+		return;
+	}
+
+	for(auto &LockedTuning : LockedTuning()[TuneLock])
+		SetLockedTune(pLockedTunings, LockedTuning);
+}
+
+CTuningParams CGameContext::ApplyLockedTunings(CTuningParams Tuning, LOCKED_TUNES LockedTunings)
+{
+	for(auto &LockedTuning : LockedTunings)
+		Tuning.Set(LockedTuning.m_aParam, LockedTuning.m_Value);
+	return Tuning;
+}
+
+
 void CGameContext::FillAntibot(CAntibotRoundData *pData)
 {
 	if(!pData->m_Map.m_pTiles)
