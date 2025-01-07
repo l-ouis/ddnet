@@ -507,29 +507,30 @@ void CCharacter::FireWeapon()
 			if((pTarget == this || (pTarget->IsAlive() && !CanCollide(pTarget->GetPlayer()->GetCid()))))
 				continue;
 
-			// set his velocity to fast upward (for now)
-			if(length(pTarget->m_Pos - ProjStartPos) > 0.0f)
-				GameServer()->CreateHammerHit(pTarget->m_Pos - normalize(pTarget->m_Pos - ProjStartPos) * GetProximityRadius() * 0.5f, TeamMask());
-			else
-				GameServer()->CreateHammerHit(ProjStartPos, TeamMask());
+			pTarget->Die(m_pPlayer->GetCid(), WEAPON_HAMMER, 1);
+			// // set his velocity to fast upward (for now)
+			// if(length(pTarget->m_Pos - ProjStartPos) > 0.0f)
+			// 	GameServer()->CreateHammerHit(pTarget->m_Pos - normalize(pTarget->m_Pos - ProjStartPos) * GetProximityRadius() * 0.5f, TeamMask());
+			// else
+			// 	GameServer()->CreateHammerHit(ProjStartPos, TeamMask());
 
-			vec2 Dir;
-			if(length(pTarget->m_Pos - m_Pos) > 0.0f)
-				Dir = normalize(pTarget->m_Pos - m_Pos);
-			else
-				Dir = vec2(0.f, -1.f);
+			// vec2 Dir;
+			// if(length(pTarget->m_Pos - m_Pos) > 0.0f)
+			// 	Dir = normalize(pTarget->m_Pos - m_Pos);
+			// else
+			// 	Dir = vec2(0.f, -1.f);
 
-			float Strength = GetTuning(m_TuneZone)->m_HammerStrength;
+			// float Strength = GetTuning(m_TuneZone)->m_HammerStrength;
 
-			vec2 Temp = pTarget->m_Core.m_Vel + normalize(Dir + vec2(0.f, -1.1f)) * 10.0f;
-			Temp = ClampVel(pTarget->m_MoveRestrictions, Temp);
-			Temp -= pTarget->m_Core.m_Vel;
-			pTarget->TakeDamage((vec2(0.f, -1.0f) + Temp) * Strength, g_pData->m_Weapons.m_Hammer.m_pBase->m_Damage,
-				m_pPlayer->GetCid(), m_Core.m_ActiveWeapon);
-			pTarget->UnFreeze();
+			// vec2 Temp = pTarget->m_Core.m_Vel + normalize(Dir + vec2(0.f, -1.1f)) * 10.0f;
+			// Temp = ClampVel(pTarget->m_MoveRestrictions, Temp);
+			// Temp -= pTarget->m_Core.m_Vel;
+			// pTarget->TakeDamage((vec2(0.f, -1.0f) + Temp) * Strength, g_pData->m_Weapons.m_Hammer.m_pBase->m_Damage,
+			// 	m_pPlayer->GetCid(), m_Core.m_ActiveWeapon);
+			// pTarget->UnFreeze();
 
-			if(m_FreezeHammer)
-				pTarget->Freeze();
+			// if(m_FreezeHammer)
+			// 	pTarget->Freeze();
 
 			Antibot()->OnHammerHit(m_pPlayer->GetCid(), pTarget->GetPlayer()->GetCid());
 

@@ -23,7 +23,7 @@ enum
 
 class CTeamsCore
 {
-	int m_aTeam[MAX_CLIENTS];
+	int m_aTeam[MAX_CLIENTS] = {-1};
 	bool m_aIsSolo[MAX_CLIENTS];
 
 public:

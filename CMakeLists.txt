@@ -2735,6 +2735,8 @@ if(SERVER)
     gamemodes/DDRace.h
     gamemodes/mod.cpp
     gamemodes/mod.h
+    gamemodes/tag.cpp
+    gamemodes/tag.h
     gameworld.cpp
     gameworld.h
     player.cpp
