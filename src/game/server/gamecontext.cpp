@@ -30,6 +30,7 @@
 #include <game/generated/protocolglue.h>
 
 #include "entities/character.h"
+#include "entities/targetswitch.h"
 #include "gamemodes/DDRace.h"
 #include "gamemodes/mod.h"
 #include "player.h"
@@ -359,6 +360,26 @@ void CGameContext::CreateExplosion(vec2 Pos, int Owner, int Weapon, bool NoDamag
 			}
 
 			pChr->TakeDamage(ForceDir * Dmg * 2, (int)Dmg, Owner, Weapon);
+		}
+	}
+
+	CEntity *apTargetEnts[MAX_CLIENTS];
+	// Targets need a bigger force to activate
+	Radius = 60.0f;
+	Num = m_World.FindEntities(Pos, Radius, apTargetEnts, MAX_CLIENTS, CGameWorld::ENTTYPE_HITTABLE);
+	for(int i = 0; i < Num; i++)
+	{
+		auto *pTarget = static_cast<CTargetSwitch *>(apTargetEnts[i]);
+		if((GetPlayerChar(Owner) ? !GetPlayerChar(Owner)->GrenadeHitDisabled() : g_Config.m_SvHit) || NoDamage)
+		{
+			int PlayerTeam = GetDDRaceTeam(Owner);
+			log_info("server", "payerteam %d", PlayerTeam);
+			if((GetPlayerChar(Owner) ? GetPlayerChar(Owner)->GrenadeHitDisabled() : !g_Config.m_SvHit) || NoDamage)
+			{
+				continue;
+			}
+
+			pTarget->GetHit(PlayerTeam);
 		}
 	}
 }
@@ -4164,7 +4185,7 @@ void CGameContext::CreateAllEntities(bool Initial)
 				// if(SwitchType == TILE_DOOR_OFF)
 				if(SwitchType >= ENTITY_OFFSET)
 				{
-					m_pController->OnEntity(SwitchType - ENTITY_OFFSET, x, y, LAYER_SWITCH, pSwitch[Index].m_Flags, Initial, pSwitch[Index].m_Number);
+					m_pController->OnEntity(SwitchType - ENTITY_OFFSET, x, y, LAYER_SWITCH, pSwitch[Index].m_Flags, Initial, pSwitch[Index].m_Number, pSwitch[Index].m_Delay);
 				}
 			}
 		}
