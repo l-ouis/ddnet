@@ -424,6 +424,16 @@ void CGameContext::CreateFinishEffect(vec2 Pos, CClientMask Mask)
 	}
 }
 
+void CGameContext::CreateTargetHit(vec2 Pos, CClientMask Mask)
+{
+	CNetEvent_TargetHit *pEvent = m_Events.Create<CNetEvent_TargetHit>(Mask);
+	if(pEvent)
+	{
+		pEvent->m_X = (int)Pos.x;
+		pEvent->m_Y = (int)Pos.y;
+	}
+}
+
 void CGameContext::CreateSound(vec2 Pos, int Sound, CClientMask Mask)
 {
 	if(Sound < 0)
@@ -607,7 +617,7 @@ bool CGameContext::SnapTargetSwitch(const CSnapContext &Context, int SnapId, con
 		pPickup->m_Y = (int)Pos.y;
 		pPickup->m_Type = PickupType_SixToSeven(POWERUP_ARMOR, 0);
 	}
-	else if(Context.GetClientVersion() >= 0)
+	else if(Context.GetClientVersion() >= VERSION_DDNET_TARGETSWITCH)
 	{
 		CNetObj_DDNetTargetSwitch *pTargetSwitch = Server()->SnapNewItem<CNetObj_DDNetTargetSwitch>(SnapId);
 		if(!pTargetSwitch)

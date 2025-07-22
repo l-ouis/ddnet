@@ -347,7 +347,7 @@ void CCharacter::HandleNinja()
 					continue;
 
 				// check so we are sufficiently close
-				if(distance(pChr->m_Pos, m_Pos) > (GetProximityRadius() * 2.0f))
+				if(distance(pChr->m_Pos, m_Pos) > (Radius))
 					continue;
 
 				// Hit a player, give them damage and stuffs...
@@ -377,7 +377,7 @@ void CCharacter::HandleNinja()
 				if(AlreadyHit)
 					continue;
 
-				if(distance(pTarget->m_Pos, m_Pos) > (GetProximityRadius() * 2.0f))
+				if(distance(pTarget->m_Pos, m_Pos) > (Radius))
 					continue;
 
 				// TODO: consider if this is good behavior

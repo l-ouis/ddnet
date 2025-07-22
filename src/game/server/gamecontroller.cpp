@@ -381,13 +381,13 @@ bool IGameController::OnEntity(int Index, int x, int y, int Layer, int Flags, bo
 	{
 		new CGun(&GameServer()->m_World, Pos, false, false, Layer, Number);
 	}
-	else if(Index == ENTITY_TARGET_SWITCH_OPEN)
-	{
-		new CTargetSwitch(&GameServer()->m_World, Pos, TARGETSWITCHTYPE_OPEN, Layer, Number, Flags, Delay);
-	}
 	else if(Index == ENTITY_TARGET_SWITCH_CLOSE)
 	{
 		new CTargetSwitch(&GameServer()->m_World, Pos, TARGETSWITCHTYPE_CLOSE, Layer, Number, Flags, Delay);
+	}
+	else if(Index == ENTITY_TARGET_SWITCH_OPEN)
+	{
+		new CTargetSwitch(&GameServer()->m_World, Pos, TARGETSWITCHTYPE_OPEN, Layer, Number, Flags, Delay);
 	}
 	else if(Index == ENTITY_TARGET_SWITCH_ALTERNATE)
 	{

@@ -764,10 +764,6 @@ public:
 		IGraphics::CTextureHandle m_SpriteNinjaBarEmpty;
 		IGraphics::CTextureHandle m_SpriteNinjaBarEmptyRight;
 
-		// target switches
-		IGraphics::CTextureHandle m_TargetSwitchOpen;
-		IGraphics::CTextureHandle m_TargetSwitchClose;
-
 		bool IsSixup()
 		{
 			return m_SpriteNinjaBarFullLeft.IsValid();
@@ -846,6 +842,8 @@ public:
 		IGraphics::CTextureHandle m_SpritePulley;
 		IGraphics::CTextureHandle m_SpriteHectagon;
 		IGraphics::CTextureHandle m_aSpriteParticles[4];
+		IGraphics::CTextureHandle m_TargetSwitchOpen;
+		IGraphics::CTextureHandle m_TargetSwitchClose;
 	};
 
 	SClientExtrasSkin m_ExtrasSkin;

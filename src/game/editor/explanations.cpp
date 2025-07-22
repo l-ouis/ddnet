@@ -445,8 +445,20 @@ const char *CEditor::ExplainDDNet(int Tile, int Layer)
 			return "DRAGGING LASER: Grabs and attracts the closest tee to it. Can reach tees through walls but not through LASER BLOCKER. Strong.";
 		break;
 	case ENTITY_OFFSET + ENTITY_DOOR:
-		if(Layer == LAYER_GAME || Layer == LAYER_FRONT || Layer == LAYER_SWITCH)
+		if(Layer == LAYER_SWITCH)
 			return "DOOR: Combined with LASER LENGTH creates doors. Doesn't allow to go through it (only with NINJA).";
+		break;
+	case ENTITY_OFFSET + ENTITY_TARGET_SWITCH_CLOSE:
+		if(Layer == LAYER_SWITCH)
+			return "Spawns a target entity. When hit with any weapon (except pistol), closes the given switch.";
+		break;
+	case ENTITY_OFFSET + ENTITY_TARGET_SWITCH_OPEN:
+		if(Layer == LAYER_SWITCH)
+			return "Spawns a target entity. When hit with any weapon (except pistol), opens the given switch.";
+		break;
+	case ENTITY_OFFSET + ENTITY_TARGET_SWITCH_ALTERNATE:
+		if(Layer == LAYER_GAME || Layer == LAYER_FRONT || Layer == LAYER_SWITCH)
+			return "Spawns a target entity. When hit with any weapon (except pistol), alternates between opening and closing the given switch.";
 		break;
 	case TILE_TELE_GUN_ENABLE:
 		if(Layer == LAYER_GAME || Layer == LAYER_FRONT)

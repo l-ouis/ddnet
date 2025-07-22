@@ -103,7 +103,7 @@ bool CLaser::HitTargetSwitch(vec2 From, vec2 To)
 {
 	vec2 At;
 	CCharacter *pOwnerChar = GameServer()->GetPlayerChar(m_Owner);
-	CTargetSwitch *pHit;
+	CTargetSwitch *pHit = nullptr;
 
 	if(pOwnerChar ? (!pOwnerChar->LaserHitDisabled() && m_Type == WEAPON_LASER) || (!pOwnerChar->ShotgunHitDisabled() && m_Type == WEAPON_SHOTGUN) : g_Config.m_SvHit)
 		pHit = GameWorld()->IntersectTargetSwitch(m_Pos, To, 0.f, At);
