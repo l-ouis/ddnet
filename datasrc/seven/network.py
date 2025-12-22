@@ -378,6 +378,13 @@ Messages = [
 
 	NetMessage("Sv_GameMsg", []),
 
+	NetMessage("Sv_TileCursor", [
+		NetIntRange("m_ClientId", 0, 'MAX_CLIENTS-1'),
+		NetBool("m_Active"),
+		NetIntAny("m_X"),
+		NetIntAny("m_Y"),
+	]),
+
 	## Demo messages
 	NetMessage("De_ClientEnter", [
 		NetStringStrict("m_pName"),
@@ -417,6 +424,12 @@ Messages = [
 	]),
 
 	NetMessage("Cl_Kill", []),
+
+	NetMessage("Cl_SetTileCursor", [
+		NetBool("m_Active"),
+		NetIntAny("m_X"),
+		NetIntAny("m_Y"),
+	]),
 
 	NetMessage("Cl_ReadyChange", []),
 

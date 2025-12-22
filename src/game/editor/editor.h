@@ -334,6 +334,7 @@ public:
 	bool Load(const char *pFilename, int StorageType) override;
 	bool HandleMapDrop(const char *pFilename, int StorageType) override;
 	void LoadCurrentMap();
+	void ApplyClientTileState();
 	void Render();
 
 	void RenderPressedKeys(CUIRect View);
