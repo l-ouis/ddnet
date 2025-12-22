@@ -73,6 +73,8 @@ public:
 	virtual bool IsValid() const { return true; }
 	virtual bool IsGroup() const { return false; }
 	virtual void Unload() = 0;
+	virtual bool RefreshForTilemap(const CMapItemLayerTilemap *pTilemap);
+	void DisableRenderUploadCallback();
 
 	bool IsVisibleInClipRegion(const std::optional<CClipRegion> &ClipRegion) const;
 	int GetGroup() const { return m_GroupId; }
@@ -120,12 +122,14 @@ public:
 	bool DoRender(const CRenderLayerParams &Params) override;
 	void Init() override;
 	void OnInit(IGraphics *pGraphics, ITextRender *pTextRender, CRenderMap *pRenderMap, std::shared_ptr<CEnvelopeManager> &pEnvelopeManager, IMap *pMap, IMapImages *pMapImages, std::optional<FRenderUploadCallback> &FRenderUploadCallbackOptional) override;
+ 	bool RefreshForTilemap(const CMapItemLayerTilemap *pTilemap) override;
 
 	virtual int GetDataIndex(unsigned int &TileSize) const;
 	bool IsValid() const override { return GetRawData() != nullptr; }
 	void Unload() override;
 
 protected:
+	virtual void Refresh();
 	virtual void *GetRawData() const;
 	template<class T>
 	T *GetData() const;
@@ -298,6 +302,7 @@ public:
 	void Init() override;
 
 protected:
+	void Refresh() override;
 	void RenderTileLayerWithTileBuffer(const ColorRGBA &Color, const CRenderLayerParams &Params) override;
 	void RenderTileLayerNoTileBuffer(const ColorRGBA &Color, const CRenderLayerParams &Params) override;
 
@@ -322,6 +327,7 @@ public:
 	void Unload() override;
 
 protected:
+	void Refresh() override;
 	void RenderTileLayerWithTileBuffer(const ColorRGBA &Color, const CRenderLayerParams &Params) override;
 	void RenderTileLayerNoTileBuffer(const ColorRGBA &Color, const CRenderLayerParams &Params) override;
 	void GetTileData(unsigned char *pIndex, unsigned char *pFlags, int *pAngleRotate, unsigned int x, unsigned int y, int CurOverlay) const override;
@@ -341,6 +347,7 @@ public:
 	void Unload() override;
 
 protected:
+	void Refresh() override;
 	void RenderTileLayerWithTileBuffer(const ColorRGBA &Color, const CRenderLayerParams &Params) override;
 	void RenderTileLayerNoTileBuffer(const ColorRGBA &Color, const CRenderLayerParams &Params) override;
 	void GetTileData(unsigned char *pIndex, unsigned char *pFlags, int *pAngleRotate, unsigned int x, unsigned int y, int CurOverlay) const override;
@@ -362,6 +369,7 @@ public:
 	void Unload() override;
 
 protected:
+	void Refresh() override;
 	void RenderTileLayerWithTileBuffer(const ColorRGBA &Color, const CRenderLayerParams &Params) override;
 	void RenderTileLayerNoTileBuffer(const ColorRGBA &Color, const CRenderLayerParams &Params) override;
 	void GetTileData(unsigned char *pIndex, unsigned char *pFlags, int *pAngleRotate, unsigned int x, unsigned int y, int CurOverlay) const override;

@@ -44,6 +44,16 @@ void CMapLayers::OnMapLoad()
 	m_EnvEvaluator = CEnvelopeState(m_pLayers->Map(), m_OnlineOnly);
 	m_EnvEvaluator.OnInterfacesInit(GameClient());
 	m_MapRenderer.Load(m_Type, m_pLayers, m_pImages, &m_EnvEvaluator, FRenderCallbackOptional);
+	m_MapRenderer.DisableUploadCallbacks();
+}
+
+bool CMapLayers::RefreshTilemap(const CMapItemLayerTilemap *pTilemap)
+{
+	if(!pTilemap)
+	{
+		return false;
+	}
+	return m_MapRenderer.RefreshTileLayer(pTilemap);
 }
 
 void CMapLayers::OnRender()
