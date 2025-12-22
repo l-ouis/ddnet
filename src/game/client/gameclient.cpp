@@ -228,6 +228,7 @@ void CGameClient::OnConsoleInit()
 	Console()->Register("kill", "", CFGFLAG_CLIENT, ConKill, this, "Kill yourself to restart");
 	Console()->Register("ready_change", "", CFGFLAG_CLIENT, ConReadyChange7, this, "Change ready state (0.7 only)");
 	Console()->Register("cl_request_tile_change", "i[layer]i[x]i[y]i[index]i[flags]", CFGFLAG_CLIENT, ConRequestTileChange, this, "Request the server to modify a tile (test feature)");
+	Console()->Register("tiletool_clear_cursor", "", CFGFLAG_CLIENT, ConTileToolClearCursor, this, "Replace the tile under the tile tool cursor with air on game/front layers");
 
 	// register game commands to allow the client prediction to load settings from the map
 	Console()->Register("tune", "s[tuning] ?f[value]", CFGFLAG_GAME, ConTuneParam, this, "Tune variable to value");
@@ -803,16 +804,14 @@ void CGameClient::OnReset()
 	m_GameWorld.m_WorldConfig.m_InfiniteAmmo = true;
 	m_PredictedWorld.CopyWorld(&m_GameWorld);
 	m_PrevPredictedWorld.CopyWorld(&m_PredictedWorld);
-	m_TileToolDragActive = false;
-	m_TileToolLastTile = ivec2(-1, -1);
-	m_TileToolLastSentTile = ivec2(-1, -1);
+	ResetTileToolDrag();
+	ResetTileToolClearDrag();
 	for(int Dummy = 0; Dummy < NUM_DUMMIES; ++Dummy)
 	{
 		m_aTileToolCursorActive[Dummy] = false;
 		m_aTileToolLastCursorSent[Dummy] = ivec2(-1, -1);
 		m_aTileToolSelectedPaletteIndex[Dummy] = 0;
 	}
-	m_TileToolEditedThisDrag.clear();
 
 	m_vSnapEntities.clear();
 
@@ -4688,6 +4687,34 @@ void CGameClient::ConRequestTileChange(IConsole::IResult *pResult, void *pUserDa
 	}
 }
 
+void CGameClient::ConTileToolClearCursor(IConsole::IResult *pResult, void *pUserData)
+{
+	CGameClient *pSelf = static_cast<CGameClient *>(pUserData);
+	if(!pSelf->IsLocalTileToolEquipped())
+	{
+		pSelf->Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "client", "Tile tool not equipped");
+		return;
+	}
+
+	ivec2 Tile;
+	if(!pSelf->GetTileToolCursorTile(Tile))
+	{
+		pSelf->Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "client", "Tile cursor is outside the map");
+		return;
+	}
+
+	if(!pSelf->SendTileToolLayerRequest(LAYER_GAME, Tile, CGameClient::STileToolLayer{TILE_AIR, 0}))
+	{
+		return;
+	}
+
+	const CLayers *pLayers = pSelf->Layers();
+	if(pLayers && pLayers->GetTilemapForLayer(LAYER_FRONT))
+	{
+		pSelf->SendTileToolLayerRequest(LAYER_FRONT, Tile, CGameClient::STileToolLayer{TILE_AIR, 0});
+	}
+}
+
 bool CGameClient::IsLocalTileToolEquipped() const
 {
 	if(Client()->State() != IClient::STATE_ONLINE)
@@ -4723,7 +4750,7 @@ void CGameClient::SetTileToolSelectionIndex(int EntryIndex, int Dummy)
 	}
 
 	m_aTileToolSelectedPaletteIndex[Dummy] = ClampedIndex;
-	m_TileToolLastSentTile = ivec2(-1, -1);
+	ResetTileToolDrag();
 }
 
 CGameClient::STileToolLayer CGameClient::TileToolLayerForEntry(int EntryIndex, bool FrontLayer) const
@@ -4741,36 +4768,6 @@ CGameClient::STileToolLayer CGameClient::TileToolLayerForEntry(int EntryIndex, b
 		Layer.m_Index = TileToolCustomTileIndexForSlot(CustomSlot);
 	}
 	return Layer;
-}
-
-bool CGameClient::TileMatchesLayer(const ivec2 &TilePos, int LayerIndex, const STileToolLayer &Layer) const
-{
-	const CLayers *pLayers = Layers();
-	if(!pLayers)
-	{
-		return false;
-	}
-
-	IMap *pMap = pLayers->Map();
-	CMapItemLayerTilemap *pTilemap = pLayers->GetTilemapForLayer(LayerIndex);
-	if(!pMap || !pTilemap)
-	{
-		return false;
-	}
-	if(TilePos.x < 0 || TilePos.x >= pTilemap->m_Width || TilePos.y < 0 || TilePos.y >= pTilemap->m_Height)
-	{
-		return false;
-	}
-
-	CTile *pTiles = EditableLayerTileData(pMap, pTilemap, LayerIndex);
-	if(!pTiles)
-	{
-		return false;
-	}
-
-	const int TileIndex = TilePos.y * pTilemap->m_Width + TilePos.x;
-	const CTile &Tile = pTiles[TileIndex];
-	return Tile.m_Index == Layer.m_Index && Tile.m_Flags == Layer.m_Flags;
 }
 
 int CGameClient::TileToolTileHash(const ivec2 &TilePos) const
@@ -4803,12 +4800,32 @@ bool CGameClient::ClampTileToolTarget(const vec2 &WorldTargetPos, ivec2 &OutTile
 	return true;
 }
 
+bool CGameClient::GetTileToolCursorTile(ivec2 &OutTile) const
+{
+	const int ControlledDummy = g_Config.m_ClDummy;
+	const vec2 TargetPos = m_Controls.m_aTargetPos[ControlledDummy];
+	const vec2 LocalPos = m_LocalCharacterPos;
+	const float Zoom = m_Camera.m_Zoom;
+	const vec2 ZoomedTarget = LocalPos + (TargetPos - LocalPos) * Zoom;
+	return ClampTileToolTarget(ZoomedTarget, OutTile);
+}
+
+void CGameClient::ResetTileToolDragState(STileToolDragState &State)
+{
+	State.m_Active = false;
+	State.m_LastTile = ivec2(-1, -1);
+	State.m_LastSentTile = ivec2(-1, -1);
+	State.m_EditedTiles.clear();
+}
+
 void CGameClient::ResetTileToolDrag()
 {
-	m_TileToolDragActive = false;
-	m_TileToolLastTile = ivec2(-1, -1);
-	m_TileToolLastSentTile = ivec2(-1, -1);
-	m_TileToolEditedThisDrag.clear();
+	ResetTileToolDragState(m_TileToolPaintDrag);
+}
+
+void CGameClient::ResetTileToolClearDrag()
+{
+	ResetTileToolDragState(m_TileToolClearDrag);
 }
 
 bool CGameClient::SendTileToolLayerRequest(int LayerIndex, const ivec2 &TilePos, const STileToolLayer &TileLayer) const
@@ -4827,7 +4844,7 @@ bool CGameClient::SendTileToolLayerRequest(int LayerIndex, const ivec2 &TilePos,
 	return true;
 }
 
-bool CGameClient::SendTileToolPaintRequest(const ivec2 &TilePos)
+bool CGameClient::SendTileToolPaintRequest(const ivec2 &TilePos, STileToolDragState &State)
 {
 	const int ControlledDummy = g_Config.m_ClDummy;
 	const int SelectionIndex = TileToolSelectionIndex(ControlledDummy);
@@ -4836,33 +4853,11 @@ bool CGameClient::SendTileToolPaintRequest(const ivec2 &TilePos)
 	STileToolLayer GameLayerToSend = DesiredGameLayer;
 	STileToolLayer FrontLayerToSend = Entry.m_SetFrontLayer ? TileToolLayerForEntry(SelectionIndex, true) : STileToolLayer{};
 	const int TileHash = TileToolTileHash(TilePos);
-	const bool AlreadyEdited = TileHash != -1 && m_TileToolEditedThisDrag.find(TileHash) != m_TileToolEditedThisDrag.end();
+	const bool AlreadyEdited = TileHash != -1 && State.m_EditedTiles.find(TileHash) != State.m_EditedTiles.end();
 	if(AlreadyEdited)
 	{
 		return true;
 	}
-	bool ShouldErase = false;
-	if(TileMatchesLayer(TilePos, LAYER_GAME, DesiredGameLayer))
-	{
-		if(Entry.m_SetFrontLayer)
-		{
-			ShouldErase = TileMatchesLayer(TilePos, LAYER_FRONT, FrontLayerToSend);
-		}
-		else
-		{
-			ShouldErase = true;
-		}
-	}
-
-	if(ShouldErase)
-	{
-		GameLayerToSend = STileToolLayer{TILE_AIR, 0};
-		if(Entry.m_SetFrontLayer)
-		{
-			FrontLayerToSend = STileToolLayer{TILE_AIR, 0};
-		}
-	}
-
 	if(!SendTileToolLayerRequest(LAYER_GAME, TilePos, GameLayerToSend))
 	{
 		return false;
@@ -4878,32 +4873,73 @@ bool CGameClient::SendTileToolPaintRequest(const ivec2 &TilePos)
 
 	if(TileHash != -1)
 	{
-		m_TileToolEditedThisDrag.insert(TileHash);
+		State.m_EditedTiles.insert(TileHash);
 	}
 
 	return true;
 }
 
-void CGameClient::SendTileToolRequest(const ivec2 &TilePos)
+bool CGameClient::SendTileToolClearRequest(const ivec2 &TilePos, STileToolDragState &State)
 {
-	if(TilePos == m_TileToolLastSentTile)
+	const int TileHash = TileToolTileHash(TilePos);
+	const bool AlreadyEdited = TileHash != -1 && State.m_EditedTiles.find(TileHash) != State.m_EditedTiles.end();
+	if(AlreadyEdited)
 	{
-		return;
+		return true;
 	}
 
-	if(!SendTileToolPaintRequest(TilePos))
+	if(!SendTileToolLayerRequest(LAYER_GAME, TilePos, STileToolLayer{TILE_AIR, 0}))
 	{
-		return;
+		return false;
 	}
 
-	m_TileToolLastSentTile = TilePos;
+	const CLayers *pLayers = Layers();
+	if(pLayers && pLayers->GetTilemapForLayer(LAYER_FRONT))
+	{
+		if(!SendTileToolLayerRequest(LAYER_FRONT, TilePos, STileToolLayer{TILE_AIR, 0}))
+		{
+			return false;
+		}
+	}
+
+	if(TileHash != -1)
+	{
+		State.m_EditedTiles.insert(TileHash);
+	}
+
+	return true;
 }
 
-void CGameClient::SendTileToolLine(const ivec2 &From, const ivec2 &To)
+void CGameClient::SendTileToolRequest(const ivec2 &TilePos, STileToolDragState &State, ETileToolAction Action)
+{
+	if(TilePos == State.m_LastSentTile)
+	{
+		return;
+	}
+
+	bool Success = false;
+	if(Action == ETileToolAction::Paint)
+	{
+		Success = SendTileToolPaintRequest(TilePos, State);
+	}
+	else
+	{
+		Success = SendTileToolClearRequest(TilePos, State);
+	}
+
+	if(!Success)
+	{
+		return;
+	}
+
+	State.m_LastSentTile = TilePos;
+}
+
+void CGameClient::SendTileToolLine(const ivec2 &From, const ivec2 &To, STileToolDragState &State, ETileToolAction Action)
 {
 	if(From == To)
 	{
-		SendTileToolRequest(To);
+		SendTileToolRequest(To, State, Action);
 		return;
 	}
 
@@ -4921,7 +4957,7 @@ void CGameClient::SendTileToolLine(const ivec2 &From, const ivec2 &To)
 	{
 		if(!SkipFirst)
 		{
-			SendTileToolRequest(ivec2(x0, y0));
+			SendTileToolRequest(ivec2(x0, y0), State, Action);
 		}
 		SkipFirst = false;
 
@@ -5010,22 +5046,56 @@ void CGameClient::HandleTileToolInput(const vec2 &WorldTargetPos, bool FirePress
 		return;
 	}
 
-	if(FirePressed || (FireHeld && !m_TileToolDragActive))
+	STileToolDragState &DragState = m_TileToolPaintDrag;
+	if(FirePressed || (FireHeld && !DragState.m_Active))
 	{
-		m_TileToolEditedThisDrag.clear();
-		m_TileToolDragActive = true;
-		m_TileToolLastTile = Tile;
-		SendTileToolRequest(Tile);
+		DragState.m_Active = true;
+		DragState.m_LastTile = Tile;
+		SendTileToolRequest(Tile, DragState, ETileToolAction::Paint);
 	}
-	else if(m_TileToolDragActive && FireHeld && Tile != m_TileToolLastTile)
+	else if(DragState.m_Active && FireHeld && Tile != DragState.m_LastTile)
 	{
-		SendTileToolLine(m_TileToolLastTile, Tile);
-		m_TileToolLastTile = Tile;
+		SendTileToolLine(DragState.m_LastTile, Tile, DragState, ETileToolAction::Paint);
+		DragState.m_LastTile = Tile;
 	}
 
 	if(FireReleased)
 	{
 		ResetTileToolDrag();
+	}
+}
+
+void CGameClient::HandleTileToolClearInput(const vec2 &WorldTargetPos, bool Pressed, bool Held, bool Released)
+{
+	if(!IsLocalTileToolEquipped())
+	{
+		ResetTileToolClearDrag();
+		return;
+	}
+
+	ivec2 Tile;
+	if(!ClampTileToolTarget(WorldTargetPos, Tile))
+	{
+		ResetTileToolClearDrag();
+		return;
+	}
+
+	STileToolDragState &DragState = m_TileToolClearDrag;
+	if(Pressed || (Held && !DragState.m_Active))
+	{
+		DragState.m_Active = true;
+		DragState.m_LastTile = Tile;
+		SendTileToolRequest(Tile, DragState, ETileToolAction::Clear);
+	}
+	else if(DragState.m_Active && Held && Tile != DragState.m_LastTile)
+	{
+		SendTileToolLine(DragState.m_LastTile, Tile, DragState, ETileToolAction::Clear);
+		DragState.m_LastTile = Tile;
+	}
+
+	if(Released)
+	{
+		ResetTileToolClearDrag();
 	}
 }
 
@@ -5043,12 +5113,8 @@ void CGameClient::RenderTileToolTargetIndicator()
 		return;
 	}
 
-	const vec2 TargetPos = m_Controls.m_aTargetPos[g_Config.m_ClDummy];
-	const vec2 LocalPos = m_LocalCharacterPos;
-	const float Zoom = m_Camera.m_Zoom;
-	const vec2 ZoomedTarget = LocalPos + (TargetPos - LocalPos) * Zoom;
 	ivec2 Tile;
-	if(!ClampTileToolTarget(ZoomedTarget, Tile))
+	if(!GetTileToolCursorTile(Tile))
 	{
 		DeactivateCursor();
 		return;

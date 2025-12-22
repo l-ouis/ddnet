@@ -246,6 +246,7 @@ private:
 	static void ConTeam(IConsole::IResult *pResult, void *pUserData);
 	static void ConKill(IConsole::IResult *pResult, void *pUserData);
 	static void ConReadyChange7(IConsole::IResult *pResult, void *pUserData);
+	static void ConTileToolClearCursor(IConsole::IResult *pResult, void *pUserData);
 	static void ConRequestTileChange(IConsole::IResult *pResult, void *pUserData);
 
 	static void ConchainLanguageUpdate(IConsole::IResult *pResult, void *pUserData, IConsole::FCommandCallback pfnCallback, void *pCallbackUserData);
@@ -316,6 +317,20 @@ public:
 		int m_Flags = 0;
 	};
 
+	struct STileToolDragState
+	{
+		bool m_Active = false;
+		ivec2 m_LastTile = ivec2(-1, -1);
+		ivec2 m_LastSentTile = ivec2(-1, -1);
+		std::unordered_set<int> m_EditedTiles;
+	};
+
+	enum class ETileToolAction
+	{
+		Paint,
+		Clear,
+	};
+
 	struct STileToolPaletteEntry
 	{
 		const char *m_pLabel = "";
@@ -330,17 +345,20 @@ public:
 	static const std::array<STileToolPaletteEntry, TILE_TOOL_PALETTE_SIZE> ms_aTileToolPalette;
 
 	void HandleTileToolInput(const vec2 &WorldTargetPos, bool FirePressed, bool FireHeld, bool FireReleased);
+	void HandleTileToolClearInput(const vec2 &WorldTargetPos, bool Pressed, bool Held, bool Released);
 	void ResetTileToolDrag();
-	void SendTileToolRequest(const ivec2 &TilePos);
-	void SendTileToolLine(const ivec2 &From, const ivec2 &To);
+	void ResetTileToolClearDrag();
+	void ResetTileToolDragState(STileToolDragState &State);
+	void SendTileToolRequest(const ivec2 &TilePos, STileToolDragState &State, ETileToolAction Action);
+	void SendTileToolLine(const ivec2 &From, const ivec2 &To, STileToolDragState &State, ETileToolAction Action);
 	bool ClampTileToolTarget(const vec2 &WorldTargetPos, ivec2 &OutTile) const;
+	bool GetTileToolCursorTile(ivec2 &OutTile) const;
 	void RenderTileToolTargetIndicator();
 	bool IsLocalTileToolEquipped() const;
 	int TileToolSelectionIndex(int Dummy) const;
 	void SetTileToolSelectionIndex(int EntryIndex, int Dummy);
 	const std::array<STileToolPaletteEntry, TILE_TOOL_PALETTE_SIZE> &TileToolPalette() const { return ms_aTileToolPalette; }
 	STileToolLayer TileToolLayerForEntry(int EntryIndex, bool FrontLayer) const;
-	bool TileMatchesLayer(const ivec2 &TilePos, int LayerIndex, const STileToolLayer &Layer) const;
 	int TileToolTileHash(const ivec2 &TilePos) const;
 	void UpdateTileCursorNetworkState(bool Active, const ivec2 &Tile, int Dummy);
 
@@ -354,16 +372,15 @@ public:
 	bool m_NewTick;
 	bool m_NewPredictedTick;
 	int m_aFlagDropTick[2];
-	bool SendTileToolPaintRequest(const ivec2 &TilePos);
+	bool SendTileToolPaintRequest(const ivec2 &TilePos, STileToolDragState &State);
+	bool SendTileToolClearRequest(const ivec2 &TilePos, STileToolDragState &State);
 	bool SendTileToolLayerRequest(int LayerIndex, const ivec2 &TilePos, const STileToolLayer &TileLayer) const;
 
-	bool m_TileToolDragActive = false;
-	ivec2 m_TileToolLastTile = ivec2(-1, -1);
-	ivec2 m_TileToolLastSentTile = ivec2(-1, -1);
+	STileToolDragState m_TileToolPaintDrag;
+	STileToolDragState m_TileToolClearDrag;
 	bool m_aTileToolCursorActive[NUM_DUMMIES] = {};
 	ivec2 m_aTileToolLastCursorSent[NUM_DUMMIES] = {};
 	int m_aTileToolSelectedPaletteIndex[NUM_DUMMIES] = {};
-	std::unordered_set<int> m_TileToolEditedThisDrag;
 
 	enum
 	{
