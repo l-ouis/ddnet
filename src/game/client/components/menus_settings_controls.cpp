@@ -83,6 +83,7 @@ void CMenusSettingsControls::OnInterfacesInit(CGameClient *pClient)
 		{EBindOptionGroup::WEAPON, Localizable("Shotgun"), "+weapon3"},
 		{EBindOptionGroup::WEAPON, Localizable("Grenade"), "+weapon4"},
 		{EBindOptionGroup::WEAPON, Localizable("Laser"), "+weapon5"},
+		{EBindOptionGroup::WEAPON, Localizable("wrench of creation"), "+weapon6"},
 		{EBindOptionGroup::WEAPON, Localizable("Next weapon"), "+nextweapon"},
 		{EBindOptionGroup::WEAPON, Localizable("Prev. weapon"), "+prevweapon"},
 		{EBindOptionGroup::VOTING, Localizable("Vote yes"), "vote yes"},

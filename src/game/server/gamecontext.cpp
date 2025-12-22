@@ -1836,6 +1836,10 @@ void CGameContext::OnClientDrop(int ClientId, const char *pReason)
 
 	AbortVoteKickOnDisconnect(ClientId);
 	m_pController->OnPlayerDisconnect(m_apPlayers[ClientId], pReason);
+	if(m_apPlayers[ClientId] && m_apPlayers[ClientId]->m_TileCursorActive)
+	{
+		SendTileCursorUpdate(ClientId, false, m_apPlayers[ClientId]->m_TileCursor.x, m_apPlayers[ClientId]->m_TileCursor.y);
+	}
 	delete m_apPlayers[ClientId];
 	m_apPlayers[ClientId] = nullptr;
 
@@ -2200,6 +2204,9 @@ void CGameContext::OnMessage(int MsgId, CUnpacker *pUnpacker, int ClientId)
 			break;
 		case NETMSGTYPE_CL_SHOWDISTANCE:
 			OnShowDistanceNetMessage(static_cast<CNetMsg_Cl_ShowDistance *>(pRawMsg), ClientId);
+			break;
+		case NETMSGTYPE_CL_SETTILECURSOR:
+			OnSetTileCursorNetMessage(static_cast<CNetMsg_Cl_SetTileCursor *>(pRawMsg), ClientId);
 			break;
 		case NETMSGTYPE_CL_CAMERAINFO:
 			OnCameraInfoNetMessage(static_cast<CNetMsg_Cl_CameraInfo *>(pRawMsg), ClientId);
@@ -2649,6 +2656,16 @@ void CGameContext::OnVoteNetMessage(const CNetMsg_Cl_Vote *pMsg, int ClientId)
 	Server()->SendPackMsg(&Msg, MSGFLAG_VITAL, ClientId);
 }
 
+void CGameContext::SendTileCursorUpdate(int ClientId, bool Active, int X, int Y)
+{
+	CNetMsg_Sv_TileCursor Msg;
+	Msg.m_ClientId = ClientId;
+	Msg.m_Active = Active;
+	Msg.m_X = X;
+	Msg.m_Y = Y;
+	Server()->SendPackMsg(&Msg, MSGFLAG_NORECORD, -1);
+}
+
 void CGameContext::OnSetTeamNetMessage(const CNetMsg_Cl_SetTeam *pMsg, int ClientId)
 {
 	if(m_World.m_Paused)
@@ -2734,6 +2751,43 @@ void CGameContext::OnShowDistanceNetMessage(const CNetMsg_Cl_ShowDistance *pMsg,
 {
 	CPlayer *pPlayer = m_apPlayers[ClientId];
 	pPlayer->m_ShowDistance = vec2(pMsg->m_X, pMsg->m_Y);
+}
+
+void CGameContext::OnSetTileCursorNetMessage(const CNetMsg_Cl_SetTileCursor *pMsg, int ClientId)
+{
+	CPlayer *pPlayer = m_apPlayers[ClientId];
+	if(!pPlayer)
+	{
+		return;
+	}
+
+	const bool Active = pMsg->m_Active;
+	const ivec2 NewCursor(pMsg->m_X, pMsg->m_Y);
+	bool StateChanged = false;
+	if(!Active)
+	{
+		if(pPlayer->m_TileCursorActive)
+		{
+			pPlayer->m_TileCursorActive = false;
+			StateChanged = true;
+		}
+	}
+	else
+	{
+		if(!pPlayer->m_TileCursorActive || pPlayer->m_TileCursor != NewCursor)
+		{
+			pPlayer->m_TileCursorActive = true;
+			pPlayer->m_TileCursor = NewCursor;
+			StateChanged = true;
+		}
+	}
+
+	if(!StateChanged)
+	{
+		return;
+	}
+
+	SendTileCursorUpdate(ClientId, Active, NewCursor.x, NewCursor.y);
 }
 
 void CGameContext::OnCameraInfoNetMessage(const CNetMsg_Cl_CameraInfo *pMsg, int ClientId)

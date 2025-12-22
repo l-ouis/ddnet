@@ -358,6 +358,12 @@ void CCharacter::FireWeapon()
 	}
 	break;
 
+	case WEAPON_TILE:
+	{
+		m_ReloadTimer = 0;
+	}
+	break;
+
 	case WEAPON_GUN:
 	{
 		if(!m_Core.m_Jetpack)

@@ -7893,20 +7893,89 @@ void CEditor::OnDialogClose()
 
 void CEditor::LoadCurrentMap()
 {
-	if(Load(m_pClient->GetCurrentMapPath(), IStorage::TYPE_SAVE))
+	bool Loaded = Load(m_pClient->GetCurrentMapPath(), IStorage::TYPE_SAVE);
+	if(Loaded)
 	{
 		Map()->m_ValidSaveFilename = !str_startswith(m_pClient->GetCurrentMapPath(), "downloadedmaps/");
 	}
 	else
 	{
-		Load(m_pClient->GetCurrentMapPath(), IStorage::TYPE_ALL);
-		Map()->m_ValidSaveFilename = false;
+		Loaded = Load(m_pClient->GetCurrentMapPath(), IStorage::TYPE_ALL);
+		m_ValidSaveFilename = false;
 	}
+
+	if(!Loaded)
+	{
+		return;
+	}
+
+	ApplyClientTileState();
 
 	CGameClient *pGameClient = (CGameClient *)Kernel()->RequestInterface<IGameClient>();
 	vec2 Center = pGameClient->m_Camera.m_Center;
 
 	MapView()->SetWorldOffset(Center);
+}
+
+void CEditor::ApplyClientTileState()
+{
+	if(Client()->State() != IClient::STATE_ONLINE && Client()->State() != IClient::STATE_DEMOPLAYBACK)
+	{
+		return;
+	}
+
+	CGameClient *pGameClient = (CGameClient *)Kernel()->RequestInterface<IGameClient>();
+	if(!pGameClient)
+	{
+		return;
+	}
+
+	const CLayers *pLayers = pGameClient->Layers();
+	if(!pLayers)
+	{
+		return;
+	}
+
+	IMap *pClientMap = pLayers->Map();
+	if(!pClientMap)
+	{
+		return;
+	}
+
+	const auto CopyLayer = [&](int LayerIndex, const std::shared_ptr<CLayerTiles> &pEditorLayer) {
+		if(!pEditorLayer)
+		{
+			return;
+		}
+
+		CMapItemLayerTilemap *pTilemap = pLayers->GetTilemapForLayer(LayerIndex);
+		if(!pTilemap)
+		{
+			return;
+		}
+
+		if(pTilemap->m_Width != pEditorLayer->m_Width || pTilemap->m_Height != pEditorLayer->m_Height)
+		{
+			return;
+		}
+
+		CTile *pClientTiles = static_cast<CTile *>(pClientMap->GetData(pTilemap->m_Data));
+		if(!pClientTiles)
+		{
+			return;
+		}
+
+		const size_t TileCount = static_cast<size_t>(pTilemap->m_Width) * pTilemap->m_Height;
+		mem_copy(pEditorLayer->m_pTiles, pClientTiles, TileCount * sizeof(CTile));
+		pEditorLayer->FlagModified(0, 0, pEditorLayer->m_Width, pEditorLayer->m_Height);
+	};
+
+	CopyLayer(LAYER_GAME, std::static_pointer_cast<CLayerTiles>(m_Map.m_pGameLayer));
+	CopyLayer(LAYER_FRONT, std::static_pointer_cast<CLayerTiles>(m_Map.m_pFrontLayer));
+	CopyLayer(LAYER_TELE, std::static_pointer_cast<CLayerTiles>(m_Map.m_pTeleLayer));
+	CopyLayer(LAYER_SPEEDUP, std::static_pointer_cast<CLayerTiles>(m_Map.m_pSpeedupLayer));
+	CopyLayer(LAYER_SWITCH, std::static_pointer_cast<CLayerTiles>(m_Map.m_pSwitchLayer));
+	CopyLayer(LAYER_TUNE, std::static_pointer_cast<CLayerTiles>(m_Map.m_pTuneLayer));
 }
 
 bool CEditor::Save(const char *pFilename)

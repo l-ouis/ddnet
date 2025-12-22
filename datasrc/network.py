@@ -8,7 +8,7 @@ GameStateFlags = ["GAMEOVER", "SUDDENDEATH", "PAUSED", "RACETIME"]
 CharacterFlags = ["SOLO", "JETPACK", "COLLISION_DISABLED", "ENDLESS_HOOK", "ENDLESS_JUMP", "SUPER",
                   "HAMMER_HIT_DISABLED", "SHOTGUN_HIT_DISABLED", "GRENADE_HIT_DISABLED", "LASER_HIT_DISABLED", "HOOK_HIT_DISABLED",
                   "TELEGUN_GUN", "TELEGUN_GRENADE", "TELEGUN_LASER",
-                  "WEAPON_HAMMER", "WEAPON_GUN", "WEAPON_SHOTGUN", "WEAPON_GRENADE", "WEAPON_LASER", "WEAPON_NINJA",
+				  "WEAPON_HAMMER", "WEAPON_GUN", "WEAPON_SHOTGUN", "WEAPON_GRENADE", "WEAPON_LASER", "WEAPON_TILE", "WEAPON_NINJA",
 				  "MOVEMENTS_DISABLED", "IN_FREEZE", "PRACTICE_MODE", "LOCK_MODE", "TEAM0_MODE", "INVINCIBLE"]
 GameInfoFlags = [
 	"TIMESCORE", "GAMETYPE_RACE", "GAMETYPE_FASTCAP", "GAMETYPE_FNG",
@@ -559,6 +559,12 @@ Messages = [
 		NetIntAny("m_Flags"),
 	]),
 
+	NetMessageEx("Cl_SetTileCursor", "set-tile-cursor@netmsg.ddnet.org", [
+		NetBool("m_Active"),
+		NetIntAny("m_X"),
+		NetIntAny("m_Y"),
+	]),
+
 	NetMessageEx("Cl_ShowOthers", "showothers@netmsg.ddnet.tw", [
 		NetIntRange("m_Show", 0, 2),
 	]),
@@ -629,6 +635,13 @@ Messages = [
 		NetIntAny("m_Layer"),
 		NetIntAny("m_Index"),
 		NetIntAny("m_Flags"),
+	]),
+
+	NetMessageEx("Sv_TileCursor", "tile-cursor@netmsg.ddnet.org", [
+		NetIntRange("m_ClientId", 0, 'MAX_CLIENTS-1'),
+		NetBool("m_Active"),
+		NetIntAny("m_X"),
+		NetIntAny("m_Y"),
 	]),
 
 	NetMessageEx("Sv_PreInput", "preinput@netmsg.ddnet.org", [

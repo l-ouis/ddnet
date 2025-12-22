@@ -69,6 +69,7 @@
 #include "components/touch_controls.h"
 #include "components/voting.h"
 
+#include <unordered_set>
 #include <vector>
 
 class CGameInfo
@@ -304,6 +305,14 @@ public:
 		return m_pHttp;
 	}
 
+	void HandleTileToolInput(const vec2 &WorldTargetPos, bool FirePressed, bool FireHeld, bool FireReleased);
+	void ResetTileToolDrag();
+	void SendTileToolRequest(const ivec2 &TilePos);
+	void SendTileToolLine(const ivec2 &From, const ivec2 &To);
+	bool ClampTileToolTarget(const vec2 &WorldTargetPos, ivec2 &OutTile) const;
+	void RenderTileToolTargetIndicator();
+	void UpdateTileCursorNetworkState(bool Active, const ivec2 &Tile, int Dummy);
+
 	int NetobjNumCorrections()
 	{
 		return m_NetObjHandler.NumObjCorrections();
@@ -314,6 +323,12 @@ public:
 	bool m_NewTick;
 	bool m_NewPredictedTick;
 	int m_aFlagDropTick[2];
+	bool m_TileToolDragActive = false;
+	ivec2 m_TileToolLastTile = ivec2(-1, -1);
+	ivec2 m_TileToolLastSentTile = ivec2(-1, -1);
+	bool m_aTileToolCursorActive[NUM_DUMMIES] = {};
+	ivec2 m_aTileToolLastCursorSent[NUM_DUMMIES] = {};
+	std::unordered_set<int> m_TileToolEditedThisDrag;
 
 	enum
 	{
@@ -471,6 +486,8 @@ public:
 		int m_FreezeEnd;
 		bool m_DeepFrozen;
 		bool m_LiveFrozen;
+		bool m_TileCursorActive;
+		ivec2 m_TileCursor;
 
 		CCharacterCore m_Predicted;
 		CCharacterCore m_PrevPredicted;

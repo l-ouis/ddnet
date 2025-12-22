@@ -157,6 +157,10 @@ void CControls::OnConsoleInit()
 		static CInputSet s_Set = {this, {&m_aInputData[0].m_WantedWeapon, &m_aInputData[1].m_WantedWeapon}, 5};
 		Console()->Register("+weapon5", "", CFGFLAG_CLIENT, ConKeyInputSet, &s_Set, "Switch to laser");
 	}
+	{
+		static CInputSet s_Set = {this, {&m_aInputData[0].m_WantedWeapon, &m_aInputData[1].m_WantedWeapon}, 6};
+		Console()->Register("+weapon6", "", CFGFLAG_CLIENT, ConKeyInputSet, &s_Set, "Switch to wrencherton");
+	}
 
 	{
 		static CInputSet s_Set = {this, {&m_aInputData[0].m_NextWeapon, &m_aInputData[1].m_NextWeapon}, 0};
@@ -322,6 +326,18 @@ int CControls::SnapInput(int *pData)
 		Send = Send || m_aInputData[g_Config.m_ClDummy].m_PrevWeapon != m_aLastData[g_Config.m_ClDummy].m_PrevWeapon;
 		Send = Send || time_get() > m_LastSendTime + time_freq() / 25; // send at least 25 Hz
 		Send = Send || (GameClient()->m_Snap.m_pLocalCharacter && GameClient()->m_Snap.m_pLocalCharacter->m_Weapon == WEAPON_NINJA && (m_aInputData[g_Config.m_ClDummy].m_Direction || m_aInputData[g_Config.m_ClDummy].m_Jump || m_aInputData[g_Config.m_ClDummy].m_Hook));
+	}
+
+	const int ActiveDummy = g_Config.m_ClDummy;
+	const bool TileWeaponFireHeld = (m_aInputData[ActiveDummy].m_Fire & 1) != 0;
+	const bool TileWeaponFirePressed = TileWeaponFireHeld && (m_aLastData[ActiveDummy].m_Fire & 1) == 0;
+	const bool TileWeaponFireReleased = !TileWeaponFireHeld && (m_aLastData[ActiveDummy].m_Fire & 1) != 0;
+	if(TileWeaponFirePressed || TileWeaponFireHeld || TileWeaponFireReleased)
+	{
+		const vec2 LocalPos = GameClient()->m_LocalCharacterPos;
+		const float Zoom = GameClient()->m_Camera.m_Zoom;
+		const vec2 ZoomedTarget = LocalPos + (m_aTargetPos[ActiveDummy] - LocalPos) * Zoom;
+		GameClient()->HandleTileToolInput(ZoomedTarget, TileWeaponFirePressed, TileWeaponFireHeld, TileWeaponFireReleased);
 	}
 
 	// copy and return size

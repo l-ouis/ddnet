@@ -183,6 +183,8 @@ public:
 	bool m_ShowAll;
 	bool m_EnableSpectatorCount;
 	vec2 m_ShowDistance;
+	bool m_TileCursorActive;
+	ivec2 m_TileCursor;
 	bool m_SpecTeam;
 	bool m_NinjaJetpack;
 
