@@ -250,6 +250,10 @@ MACRO_CONFIG_INT(ClDummyResetOnSwitch, cl_dummy_resetonswitch, 0, 0, 2, CFGFLAG_
 MACRO_CONFIG_INT(ClDummyRestoreWeapon, cl_dummy_restore_weapon, 1, 0, 1, CFGFLAG_CLIENT | CFGFLAG_SAVE | CFGFLAG_INSENSITIVE, "Whether dummy should switch to last weapon after hammerfly")
 MACRO_CONFIG_INT(ClDummyCopyMoves, cl_dummy_copy_moves, 0, 0, 1, CFGFLAG_CLIENT | CFGFLAG_INSENSITIVE, "Whether dummy should copy your moves")
 
+// tile picker
+MACRO_CONFIG_INT(ClCustomTilePick1, cl_custom_tile_pick_1, 16, 0, 255, CFGFLAG_CLIENT | CFGFLAG_SAVE, "Tile index used for the first custom tile slot")
+MACRO_CONFIG_INT(ClCustomTilePick2, cl_custom_tile_pick_2, 32, 0, 255, CFGFLAG_CLIENT | CFGFLAG_SAVE, "Tile index used for the second custom tile slot")
+
 // more controllable dummy command
 MACRO_CONFIG_INT(ClDummyControl, cl_dummy_control, 0, 0, 1, CFGFLAG_CLIENT | CFGFLAG_INSENSITIVE, "Whether you can control dummy at the same time (cl_dummy_jump, cl_dummy_fire, cl_dummy_hook)")
 MACRO_CONFIG_INT(ClDummyJump, cl_dummy_jump, 0, 0, 1, CFGFLAG_CLIENT | CFGFLAG_INSENSITIVE, "Whether dummy is jumping (requires cl_dummy_control 1)")

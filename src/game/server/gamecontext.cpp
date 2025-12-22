@@ -4654,6 +4654,45 @@ void CGameContext::LoadMapSettings()
 	Console()->ExecuteFile(aBuf, IConsole::CLIENT_ID_NO_GAME);
 }
 
+namespace
+{
+CTile *TileLayerData(IMap *pMap, CMapItemLayerTilemap *pTilemap, int Layer)
+{
+	if(!pMap || !pTilemap)
+	{
+		return nullptr;
+	}
+
+	int DataIndex = pTilemap->m_Data;
+	switch(Layer)
+	{
+	case LAYER_FRONT:
+		if(pTilemap->m_Front >= 0)
+		{
+			DataIndex = pTilemap->m_Front;
+		}
+		break;
+	case LAYER_GAME:
+	default:
+		DataIndex = pTilemap->m_Data;
+		break;
+	}
+
+	if(DataIndex < 0)
+	{
+		return nullptr;
+	}
+
+	const size_t ExpectedSize = (size_t)pTilemap->m_Width * pTilemap->m_Height * sizeof(CTile);
+	if(static_cast<size_t>(pMap->GetDataSize(DataIndex)) < ExpectedSize)
+	{
+		return nullptr;
+	}
+
+	return static_cast<CTile *>(pMap->GetData(DataIndex));
+}
+}
+
 bool CGameContext::ApplyTileModification(int Layer, int X, int Y, int Index, int Flags)
 {
 	CLayers *pLayers = &m_Layers;
@@ -4668,7 +4707,7 @@ bool CGameContext::ApplyTileModification(int Layer, int X, int Y, int Index, int
 		return false;
 	}
 
-	CTile *pTiles = static_cast<CTile *>(pMap->GetData(pTilemap->m_Data));
+	CTile *pTiles = TileLayerData(pMap, pTilemap, Layer);
 	if(!pTiles)
 	{
 		return false;

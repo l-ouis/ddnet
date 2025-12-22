@@ -7959,13 +7959,55 @@ void CEditor::ApplyClientTileState()
 			return;
 		}
 
-		CTile *pClientTiles = static_cast<CTile *>(pClientMap->GetData(pTilemap->m_Data));
+		auto FrontDataIndex = [&]() {
+			if(pTilemap->m_Front >= 0)
+			{
+				return pTilemap->m_Front;
+			}
+			return pTilemap->m_Data;
+		};
+
+		const int DataIndex = LayerIndex == LAYER_FRONT ? FrontDataIndex() : pTilemap->m_Data;
+		if(DataIndex < 0)
+		{
+			return;
+		}
+
+		CTile *pClientTiles = static_cast<CTile *>(pClientMap->GetData(DataIndex));
 		if(!pClientTiles)
 		{
 			return;
 		}
 
 		const size_t TileCount = static_cast<size_t>(pTilemap->m_Width) * pTilemap->m_Height;
+		if(LayerIndex == LAYER_FRONT)
+		{
+			auto IsEditableFrontTile = [](int Index) {
+				return Index == TILE_AIR || Index == TILE_THROUGH_CUT;
+			};
+			bool Modified = false;
+			for(size_t i = 0; i < TileCount; ++i)
+			{
+				const CTile &Incoming = pClientTiles[i];
+				CTile &Existing = pEditorLayer->m_pTiles[i];
+				if(!IsEditableFrontTile(Incoming.m_Index) || !IsEditableFrontTile(Existing.m_Index))
+				{
+					continue;
+				}
+				if(Existing.m_Index == Incoming.m_Index && Existing.m_Flags == Incoming.m_Flags)
+				{
+					continue;
+				}
+				Existing = Incoming;
+				Modified = true;
+			}
+			if(Modified)
+			{
+				pEditorLayer->FlagModified(0, 0, pEditorLayer->m_Width, pEditorLayer->m_Height);
+			}
+			return;
+		}
+
 		mem_copy(pEditorLayer->m_pTiles, pClientTiles, TileCount * sizeof(CTile));
 		pEditorLayer->FlagModified(0, 0, pEditorLayer->m_Width, pEditorLayer->m_Height);
 	};

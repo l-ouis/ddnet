@@ -69,6 +69,7 @@
 #include "components/touch_controls.h"
 #include "components/voting.h"
 
+#include <array>
 #include <unordered_set>
 #include <vector>
 
@@ -138,6 +139,9 @@ class CGameClient : public IGameClient
 {
 public:
 	// all components
+		struct STileToolLayer;
+		struct STileToolPaletteEntry;
+
 	CInfoMessages m_InfoMessages;
 	CCamera m_Camera;
 	CChat m_Chat;
@@ -279,6 +283,7 @@ public:
 	class IConfigManager *ConfigManager() const { return m_pConfigManager; }
 	class CConfig *Config() const { return m_pConfig; }
 	class IConsole *Console() { return m_pConsole; }
+	class IConsole *Console() const { return m_pConsole; }
 	class ITextRender *TextRender() const { return m_pTextRender; }
 	class IDemoPlayer *DemoPlayer() const { return m_pDemoPlayer; }
 	class IDemoRecorder *DemoRecorder(int Recorder) const { return Client()->DemoRecorder(Recorder); }
@@ -305,12 +310,38 @@ public:
 		return m_pHttp;
 	}
 
+	struct STileToolLayer
+	{
+		int m_Index = TILE_AIR;
+		int m_Flags = 0;
+	};
+
+	struct STileToolPaletteEntry
+	{
+		const char *m_pLabel = "";
+		STileToolLayer m_GameLayer;
+		bool m_SetFrontLayer = false;
+		STileToolLayer m_FrontLayer;
+		int m_CustomGameTileSlot = 0;
+		int m_CustomFrontTileSlot = 0;
+	};
+
+	static constexpr int TILE_TOOL_PALETTE_SIZE = 13;
+	static const std::array<STileToolPaletteEntry, TILE_TOOL_PALETTE_SIZE> ms_aTileToolPalette;
+
 	void HandleTileToolInput(const vec2 &WorldTargetPos, bool FirePressed, bool FireHeld, bool FireReleased);
 	void ResetTileToolDrag();
 	void SendTileToolRequest(const ivec2 &TilePos);
 	void SendTileToolLine(const ivec2 &From, const ivec2 &To);
 	bool ClampTileToolTarget(const vec2 &WorldTargetPos, ivec2 &OutTile) const;
 	void RenderTileToolTargetIndicator();
+	bool IsLocalTileToolEquipped() const;
+	int TileToolSelectionIndex(int Dummy) const;
+	void SetTileToolSelectionIndex(int EntryIndex, int Dummy);
+	const std::array<STileToolPaletteEntry, TILE_TOOL_PALETTE_SIZE> &TileToolPalette() const { return ms_aTileToolPalette; }
+	STileToolLayer TileToolLayerForEntry(int EntryIndex, bool FrontLayer) const;
+	bool TileMatchesLayer(const ivec2 &TilePos, int LayerIndex, const STileToolLayer &Layer) const;
+	int TileToolTileHash(const ivec2 &TilePos) const;
 	void UpdateTileCursorNetworkState(bool Active, const ivec2 &Tile, int Dummy);
 
 	int NetobjNumCorrections()
@@ -323,11 +354,15 @@ public:
 	bool m_NewTick;
 	bool m_NewPredictedTick;
 	int m_aFlagDropTick[2];
+	bool SendTileToolPaintRequest(const ivec2 &TilePos);
+	bool SendTileToolLayerRequest(int LayerIndex, const ivec2 &TilePos, const STileToolLayer &TileLayer) const;
+
 	bool m_TileToolDragActive = false;
 	ivec2 m_TileToolLastTile = ivec2(-1, -1);
 	ivec2 m_TileToolLastSentTile = ivec2(-1, -1);
 	bool m_aTileToolCursorActive[NUM_DUMMIES] = {};
 	ivec2 m_aTileToolLastCursorSent[NUM_DUMMIES] = {};
+	int m_aTileToolSelectedPaletteIndex[NUM_DUMMIES] = {};
 	std::unordered_set<int> m_TileToolEditedThisDrag;
 
 	enum
