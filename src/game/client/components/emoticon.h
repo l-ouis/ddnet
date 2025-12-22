@@ -13,6 +13,7 @@ class CEmoticon : public CComponent
 {
 	bool m_WasActive;
 	bool m_Active;
+	bool m_TilePickerWasActive;
 
 	vec2 m_SelectorMouse;
 	int m_SelectedEmote;
@@ -20,9 +21,15 @@ class CEmoticon : public CComponent
 
 	CUi::CTouchState m_TouchState;
 	bool m_TouchPressedOutside;
+	int m_TilePickerSelection;
+	vec2 m_TilePickerCursorMovement;
 
 	static void ConKeyEmoticon(IConsole::IResult *pResult, void *pUserData);
 	static void ConEmote(IConsole::IResult *pResult, void *pUserData);
+
+	bool ShouldUseTilePicker() const;
+	void RenderTilePicker();
+	void FinalizeTilePickerSelection();
 
 public:
 	CEmoticon();
