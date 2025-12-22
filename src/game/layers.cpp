@@ -177,3 +177,24 @@ CMapItemLayer *CLayers::GetLayer(int Index) const
 {
 	return static_cast<CMapItemLayer *>(m_pMap->GetItem(m_LayersStart + Index));
 }
+
+CMapItemLayerTilemap *CLayers::GetTilemapForLayer(int Layer) const
+{
+	switch(Layer)
+	{
+	case LAYER_GAME:
+		return m_pGameLayer;
+	case LAYER_FRONT:
+		return m_pFrontLayer;
+	case LAYER_SWITCH:
+		return m_pSwitchLayer;
+	case LAYER_TELE:
+		return m_pTeleLayer;
+	case LAYER_SPEEDUP:
+		return m_pSpeedupLayer;
+	case LAYER_TUNE:
+		return m_pTuneLayer;
+	default:
+		return nullptr;
+	}
+}

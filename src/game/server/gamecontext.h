@@ -126,6 +126,7 @@ class CGameContext : public IGameServer
 	CUuid m_GameUuid;
 	CMapBugs m_MapBugs;
 	CPrng m_Prng;
+	int64_t m_LastLiveTileTestTick;
 
 	bool m_Resetting;
 
@@ -331,6 +332,8 @@ public:
 	void OnPostGlobalSnap() override;
 
 	void UpdatePlayerMaps();
+	bool ApplyTileModification(int Layer, int X, int Y, int Index, int Flags);
+	void TestLiveTileModification();
 
 	void *PreProcessMsg(int *pMsgId, CUnpacker *pUnpacker, int ClientId);
 	void CensorMessage(char *pCensoredMessage, const char *pMessage, int Size);

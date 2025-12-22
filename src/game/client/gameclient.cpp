@@ -188,6 +188,7 @@ void CGameClient::OnConsoleInit()
 	Console()->Register("team", "i[team-id]", CFGFLAG_CLIENT, ConTeam, this, "Switch team");
 	Console()->Register("kill", "", CFGFLAG_CLIENT, ConKill, this, "Kill yourself to restart");
 	Console()->Register("ready_change", "", CFGFLAG_CLIENT, ConReadyChange7, this, "Change ready state (0.7 only)");
+	Console()->Register("cl_request_tile_change", "i[layer]i[x]i[y]i[index]i[flags]", CFGFLAG_CLIENT, ConRequestTileChange, this, "Request the server to modify a tile (test feature)");
 
 	// register game commands to allow the client prediction to load settings from the map
 	Console()->Register("tune", "s[tuning] ?f[value]", CFGFLAG_GAME, ConTuneParam, this, "Tune variable to value");
@@ -287,6 +288,43 @@ static void GenerateTimeoutCode(char *pTimeoutCode)
 		}
 	}
 }
+
+namespace
+{
+
+void RecalculateTilemapSkip(const CMapItemLayerTilemap *pTilemap, IMap *pMap)
+{
+	if(!pMap || !pTilemap)
+		return;
+
+	CTile *pTiles = static_cast<CTile *>(pMap->GetData(pTilemap->m_Data));
+	if(!pTiles)
+		return;
+
+	const int Width = pTilemap->m_Width;
+	const int Height = pTilemap->m_Height;
+	if(Width <= 0 || Height <= 0)
+		return;
+
+	for(int y = 0; y < Height; ++y)
+	{
+		pTiles[y * Width].m_Skip = 0;
+		for(int x = 1; x < Width;)
+		{
+			int SkippedX;
+			for(SkippedX = 1; x + SkippedX < Width && SkippedX < 255; ++SkippedX)
+			{
+				if(pTiles[y * Width + x + SkippedX].m_Index)
+					break;
+			}
+
+			pTiles[y * Width + x].m_Skip = SkippedX - 1;
+			x += SkippedX;
+		}
+	}
+}
+
+} // namespace
 
 void CGameClient::InitializeLanguage()
 {
@@ -1204,6 +1242,41 @@ void CGameClient::OnMessage(int MsgId, CUnpacker *pUnpacker, int Conn, bool Dumm
 		CNetMsg_Sv_MapSoundGlobal *pMsg = (CNetMsg_Sv_MapSoundGlobal *)pRawMsg;
 		m_MapSounds.Play(CSounds::CHN_GLOBAL, pMsg->m_SoundId);
 	}
+	else if(MsgId == NETMSGTYPE_SV_MODIFYTILE)
+	{
+		const auto *pMsg = static_cast<CNetMsg_Sv_ModifyTile *>(pRawMsg);
+		CLayers *pLayers = Layers();
+		IMap *pMap = pLayers->Map();
+		CMapItemLayerTilemap *pTilemap = pLayers->GetTilemapForLayer(pMsg->m_Layer);
+		if(!pMap || !pTilemap)
+		{
+			return;
+		}
+		if(pMsg->m_X < 0 || pMsg->m_X >= pTilemap->m_Width || pMsg->m_Y < 0 || pMsg->m_Y >= pTilemap->m_Height)
+		{
+			return;
+		}
+
+		CTile *pTiles = static_cast<CTile *>(pMap->GetData(pTilemap->m_Data));
+		if(!pTiles)
+		{
+			return;
+		}
+
+		const int TileIndex = pMsg->m_Y * pTilemap->m_Width + pMsg->m_X;
+		CTile &Tile = pTiles[TileIndex];
+		Tile.m_Index = pMsg->m_Index;
+		Tile.m_Flags = pMsg->m_Flags;
+
+		if(pMsg->m_Layer == LAYER_GAME)
+		{
+			const float WorldX = pMsg->m_X * 32.0f + 16.0f;
+			const float WorldY = pMsg->m_Y * 32.0f + 16.0f;
+			m_Collision.SetCollisionAt(WorldX, WorldY, pMsg->m_Index);
+		}
+
+		RefreshTileLayer(pTilemap);
+	}
 	else if(MsgId == NETMSGTYPE_SV_PREINPUT)
 	{
 		CNetMsg_Sv_PreInput *pMsg = (CNetMsg_Sv_PreInput *)pRawMsg;
@@ -1214,6 +1287,31 @@ void CGameClient::OnMessage(int MsgId, CUnpacker *pUnpacker, int Conn, bool Dumm
 		const CNetMsg_Sv_SaveCode *pMsg = (CNetMsg_Sv_SaveCode *)pRawMsg;
 		OnSaveCodeNetMessage(pMsg);
 	}
+}
+
+void CGameClient::RefreshTileLayer(const CMapItemLayerTilemap *pTilemap)
+{
+	if(!pTilemap)
+	{
+		return;
+	}
+
+	CLayers *pLayers = Layers();
+	if(!pLayers)
+	{
+		return;
+	}
+
+	IMap *pMap = pLayers->Map();
+	if(!pMap)
+	{
+		return;
+	}
+
+	RecalculateTilemapSkip(pTilemap, pMap);
+
+	m_MapLayersBackground.RefreshTilemap(pTilemap);
+	m_MapLayersForeground.RefreshTilemap(pTilemap);
 }
 
 void CGameClient::OnStateChange(int NewState, int OldState)
@@ -4441,6 +4539,27 @@ void CGameClient::RefreshSkins(int SkinDescriptorFlags)
 			continue;
 		}
 		RefreshSkin(pManagedTeeRenderInfo);
+	}
+}
+
+void CGameClient::ConRequestTileChange(IConsole::IResult *pResult, void *pUserData)
+{
+	CGameClient *pSelf = static_cast<CGameClient *>(pUserData);
+	if(pSelf->Client()->State() != IClient::STATE_ONLINE)
+	{
+		pSelf->Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "client", "Not connected to a server");
+		return;
+	}
+
+	CNetMsg_Cl_RequestTileChange Msg;
+	Msg.m_Layer = pResult->GetInteger(0);
+	Msg.m_X = pResult->GetInteger(1);
+	Msg.m_Y = pResult->GetInteger(2);
+	Msg.m_Index = pResult->GetInteger(3);
+	Msg.m_Flags = pResult->GetInteger(4);
+	if(pSelf->Client()->SendPackMsgActive(&Msg, MSGFLAG_VITAL))
+	{
+		pSelf->Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "client", "Failed to send tile change request");
 	}
 }
 

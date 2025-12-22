@@ -126,6 +126,7 @@ CGameContext::CGameContext(bool Resetting) :
 
 	m_aDeleteTempfile[0] = 0;
 	m_TeeHistorianActive = false;
+	m_LastLiveTileTestTick = 0;
 }
 
 CGameContext::~CGameContext()
@@ -1089,6 +1090,7 @@ void CGameContext::OnTick()
 {
 	// check tuning
 	CheckPureTuning();
+	TestLiveTileModification();
 
 	if(m_TeeHistorianActive)
 	{
@@ -2214,6 +2216,12 @@ void CGameContext::OnMessage(int MsgId, CUnpacker *pUnpacker, int ClientId)
 		case NETMSGTYPE_CL_KILL:
 			OnKillNetMessage(static_cast<CNetMsg_Cl_Kill *>(pRawMsg), ClientId);
 			break;
+		case NETMSGTYPE_CL_REQUESTTILECHANGE:
+		{
+			const auto *pMsg = static_cast<CNetMsg_Cl_RequestTileChange *>(pRawMsg);
+			ApplyTileModification(pMsg->m_Layer, pMsg->m_X, pMsg->m_Y, pMsg->m_Index, pMsg->m_Flags);
+			break;
+		}
 		case NETMSGTYPE_CL_ENABLESPECTATORCOUNT:
 			OnEnableSpectatorCountNetMessage(static_cast<CNetMsg_Cl_EnableSpectatorCount *>(pRawMsg), ClientId);
 		default:
@@ -4590,6 +4598,89 @@ void CGameContext::LoadMapSettings()
 	char aBuf[IO_MAX_PATH_LENGTH];
 	str_format(aBuf, sizeof(aBuf), "maps/%s.map.cfg", g_Config.m_SvMap);
 	Console()->ExecuteFile(aBuf, IConsole::CLIENT_ID_NO_GAME);
+}
+
+bool CGameContext::ApplyTileModification(int Layer, int X, int Y, int Index, int Flags)
+{
+	CLayers *pLayers = &m_Layers;
+	IMap *pMap = pLayers->Map();
+	CMapItemLayerTilemap *pTilemap = pLayers->GetTilemapForLayer(Layer);
+	if(!pMap || !pTilemap)
+	{
+		return false;
+	}
+	if(X < 0 || X >= pTilemap->m_Width || Y < 0 || Y >= pTilemap->m_Height)
+	{
+		return false;
+	}
+
+	CTile *pTiles = static_cast<CTile *>(pMap->GetData(pTilemap->m_Data));
+	if(!pTiles)
+	{
+		return false;
+	}
+
+	const int TileIndex = Y * pTilemap->m_Width + X;
+	CTile &Tile = pTiles[TileIndex];
+	if(Tile.m_Index == Index && Tile.m_Flags == Flags)
+	{
+		return false;
+	}
+
+	Tile.m_Index = Index;
+	Tile.m_Flags = Flags;
+
+	if(Layer == LAYER_GAME)
+	{
+		const float WorldX = X * 32.0f + 16.0f;
+		const float WorldY = Y * 32.0f + 16.0f;
+		m_Collision.SetCollisionAt(WorldX, WorldY, Index);
+	}
+
+	CNetMsg_Sv_ModifyTile Msg;
+	Msg.m_X = X;
+	Msg.m_Y = Y;
+	Msg.m_Layer = Layer;
+	Msg.m_Index = Index;
+	Msg.m_Flags = Flags;
+	Server()->SendPackMsg(&Msg, MSGFLAG_VITAL | MSGFLAG_NORECORD, -1);
+	return true;
+}
+
+void CGameContext::TestLiveTileModification()
+{
+	if(!g_Config.m_SvTestLiveTiles)
+	{
+		return;
+	}
+
+	const int64_t Now = Server()->Tick();
+	if(m_LastLiveTileTestTick && Now - m_LastLiveTileTestTick < Server()->TickSpeed())
+	{
+		return;
+	}
+
+	CMapItemLayerTilemap *pGameLayer = m_Layers.GetTilemapForLayer(LAYER_GAME);
+	if(!pGameLayer || pGameLayer->m_Width <= 0 || pGameLayer->m_Height <= 0)
+	{
+		m_LastLiveTileTestTick = Now;
+		return;
+	}
+
+	bool Modified = false;
+	const int Attempts = 16;
+	for(int i = 0; i < Attempts && !Modified; ++i)
+	{
+		const int X = m_Prng.RandomBits() % pGameLayer->m_Width;
+		const int Y = m_Prng.RandomBits() % pGameLayer->m_Height;
+		Modified = ApplyTileModification(LAYER_GAME, X, Y, TILE_NOHOOK, 0);
+	}
+
+	m_LastLiveTileTestTick = Now;
+	if(!Modified)
+	{
+		return;
+	}
 }
 
 void CGameContext::OnSnap(int ClientId, bool GlobalSnap)

@@ -551,6 +551,14 @@ Messages = [
 		NetIntAny("m_Y"),
 	]),
 
+	NetMessageEx("Cl_RequestTileChange", "request-tile-change@netmsg.ddnet.org", [
+		NetIntAny("m_Layer"),
+		NetIntAny("m_X"),
+		NetIntAny("m_Y"),
+		NetIntAny("m_Index"),
+		NetIntAny("m_Flags"),
+	]),
+
 	NetMessageEx("Cl_ShowOthers", "showothers@netmsg.ddnet.tw", [
 		NetIntRange("m_Show", 0, 2),
 	]),
@@ -613,6 +621,14 @@ Messages = [
 
 	NetMessageEx("Sv_MapSoundGlobal", "map-sound-global@netmsg.ddnet.org", [
 		NetIntAny("m_SoundId"),
+	]),
+
+	NetMessageEx("Sv_ModifyTile", "modify-tile@netmsg.ddnet.org", [
+		NetIntAny("m_X"),
+		NetIntAny("m_Y"),
+		NetIntAny("m_Layer"),
+		NetIntAny("m_Index"),
+		NetIntAny("m_Flags"),
 	]),
 
 	NetMessageEx("Sv_PreInput", "preinput@netmsg.ddnet.org", [

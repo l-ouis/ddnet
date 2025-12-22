@@ -210,6 +210,11 @@ void CRenderLayer::RenderLoading() const
 		(*m_RenderUploadCallback)(pLoadingTitle, pLoadingMessage, 0);
 }
 
+void CRenderLayer::DisableRenderUploadCallback()
+{
+	m_RenderUploadCallback = std::nullopt;
+}
+
 bool CRenderLayer::IsVisibleInClipRegion(const std::optional<CClipRegion> &ClipRegion) const
 {
 	// always show unclipped regions
@@ -224,6 +229,12 @@ bool CRenderLayer::IsVisibleInClipRegion(const std::optional<CClipRegion> &ClipR
 	float Bottom = ClipRegion->m_Y + ClipRegion->m_Height;
 
 	return Right >= ScreenX0 && Left <= ScreenX1 && Bottom >= ScreenY0 && Top <= ScreenY1;
+}
+
+bool CRenderLayer::RefreshForTilemap(const CMapItemLayerTilemap *pTilemap)
+{
+	(void)pTilemap;
+	return false;
 }
 
 /**************
@@ -589,10 +600,32 @@ void CRenderLayerTile::Init()
 	UploadTileData(m_VisualTiles, 0, false);
 }
 
+bool CRenderLayerTile::RefreshForTilemap(const CMapItemLayerTilemap *pTilemap)
+{
+	if(pTilemap != m_pLayerTilemap)
+	{
+		return false;
+	}
+	Refresh();
+	return true;
+}
+
+void CRenderLayerTile::Refresh()
+{
+	InitTileData();
+	UploadTileData(m_VisualTiles, 0, false);
+}
+
 void CRenderLayerTile::UploadTileData(std::optional<CTileLayerVisuals> &VisualsOptional, int CurOverlay, bool AddAsSpeedup, bool IsGameLayer)
 {
 	if(!Graphics()->IsTileBufferingEnabled())
 		return;
+
+	if(VisualsOptional.has_value())
+	{
+		VisualsOptional->Unload();
+		VisualsOptional = std::nullopt;
+	}
 
 	// prepare all visuals for all tile layers
 	std::vector<CGraphicTile> vTmpTiles;
@@ -1401,6 +1434,12 @@ void CRenderLayerEntityGame::Init()
 	UploadTileData(m_VisualTiles, 0, false, true);
 }
 
+void CRenderLayerEntityGame::Refresh()
+{
+	InitTileData();
+	UploadTileData(m_VisualTiles, 0, false, true);
+}
+
 void CRenderLayerEntityGame::RenderTileLayerWithTileBuffer(const ColorRGBA &Color, const CRenderLayerParams &Params)
 {
 	Graphics()->BlendNormal();
@@ -1456,6 +1495,13 @@ int CRenderLayerEntityTele::GetDataIndex(unsigned int &TileSize) const
 
 void CRenderLayerEntityTele::Init()
 {
+	UploadTileData(m_VisualTiles, 0, false);
+	UploadTileData(m_VisualTeleNumbers, 1, false);
+}
+
+void CRenderLayerEntityTele::Refresh()
+{
+	InitTileData();
 	UploadTileData(m_VisualTiles, 0, false);
 	UploadTileData(m_VisualTeleNumbers, 1, false);
 }
@@ -1526,6 +1572,14 @@ int CRenderLayerEntitySpeedup::GetDataIndex(unsigned int &TileSize) const
 
 void CRenderLayerEntitySpeedup::Init()
 {
+	UploadTileData(m_VisualTiles, 0, true);
+	UploadTileData(m_VisualForce, 1, false);
+	UploadTileData(m_VisualMaxSpeed, 2, false);
+}
+
+void CRenderLayerEntitySpeedup::Refresh()
+{
+	InitTileData();
 	UploadTileData(m_VisualTiles, 0, true);
 	UploadTileData(m_VisualForce, 1, false);
 	UploadTileData(m_VisualMaxSpeed, 2, false);
@@ -1606,6 +1660,14 @@ int CRenderLayerEntitySwitch::GetDataIndex(unsigned int &TileSize) const
 
 void CRenderLayerEntitySwitch::Init()
 {
+	UploadTileData(m_VisualTiles, 0, false);
+	UploadTileData(m_VisualSwitchNumberTop, 1, false);
+	UploadTileData(m_VisualSwitchNumberBottom, 2, false);
+}
+
+void CRenderLayerEntitySwitch::Refresh()
+{
+	InitTileData();
 	UploadTileData(m_VisualTiles, 0, false);
 	UploadTileData(m_VisualSwitchNumberTop, 1, false);
 	UploadTileData(m_VisualSwitchNumberBottom, 2, false);

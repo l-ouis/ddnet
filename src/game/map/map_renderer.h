@@ -14,6 +14,8 @@ public:
 
 	void Clear();
 	void Load(ERenderType Type, CLayers *pLayers, IMapImages *pMapImages, IEnvelopeEval *pEnvelopeEval, std::optional<FRenderUploadCallback> RenderCallbackOptional);
+	bool RefreshTileLayer(const CMapItemLayerTilemap *pTilemap);
+	void DisableUploadCallbacks();
 	void Render(const CRenderLayerParams &Params);
 
 private:

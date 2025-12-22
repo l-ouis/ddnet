@@ -139,6 +139,33 @@ void CMapRenderer::Load(ERenderType Type, CLayers *pLayers, IMapImages *pMapImag
 	}
 }
 
+bool CMapRenderer::RefreshTileLayer(const CMapItemLayerTilemap *pTilemap)
+{
+	bool Refreshed = false;
+	if(!pTilemap)
+	{
+		return false;
+	}
+
+	for(auto &pRenderLayer : m_vpRenderLayers)
+	{
+		if(pRenderLayer->RefreshForTilemap(pTilemap))
+		{
+			Refreshed = true;
+		}
+	}
+
+	return Refreshed;
+}
+
+void CMapRenderer::DisableUploadCallbacks()
+{
+	for(auto &pRenderLayer : m_vpRenderLayers)
+	{
+		pRenderLayer->DisableRenderUploadCallback();
+	}
+}
+
 void CMapRenderer::Render(const CRenderLayerParams &Params)
 {
 	float ScreenXLeft, ScreenYTop, ScreenXRight, ScreenYBottom;
