@@ -559,10 +559,38 @@ Messages = [
 		NetIntAny("m_Flags"),
 	]),
 
+	NetMessageEx("Cl_RequestTileArea", "request-tile-area@netmsg.ddnet.org", [
+		NetIntAny("m_Layer"),
+		NetIntAny("m_X"),
+		NetIntAny("m_Y"),
+		NetIntAny("m_Width"),
+		NetIntAny("m_Height"),
+		NetBool("m_Destructive", default=True),
+		NetIntRange("m_Mode", 0, 1),
+		NetIntAny("m_Index"),
+		NetIntAny("m_Flags"),
+		NetStringStrict("m_pPattern"),
+	]),
+
+	NetMessageEx("Cl_RequestTeleTileArea", "request-tele-tile-area@netmsg.ddnet.org", [
+		NetIntAny("m_X"),
+		NetIntAny("m_Y"),
+		NetIntAny("m_Width"),
+		NetIntAny("m_Height"),
+		NetBool("m_Destructive", default=True),
+		NetStringStrict("m_pPayload"),
+	]),
+
 	NetMessageEx("Cl_SetTileCursor", "set-tile-cursor@netmsg.ddnet.org", [
 		NetBool("m_Active"),
 		NetIntAny("m_X"),
 		NetIntAny("m_Y"),
+	]),
+
+	NetMessageEx("Cl_SetEditorSpecState", "set-editor-spec@netmsg.ddnet.org", [
+		NetBool("m_Active"),
+		NetIntAny("m_CursorX"),
+		NetIntAny("m_CursorY"),
 	]),
 
 	NetMessageEx("Cl_ShowOthers", "showothers@netmsg.ddnet.tw", [
@@ -637,11 +665,26 @@ Messages = [
 		NetIntAny("m_Flags"),
 	]),
 
+	NetMessageEx("Sv_ModifyTeleTile", "modify-tele-tile@netmsg.ddnet.org", [
+		NetIntAny("m_X"),
+		NetIntAny("m_Y"),
+		NetIntAny("m_Index"),
+		NetIntAny("m_Flags"),
+		NetIntRange("m_Number", 0, 255),
+	]),
+
 	NetMessageEx("Sv_TileCursor", "tile-cursor@netmsg.ddnet.org", [
 		NetIntRange("m_ClientId", 0, 'MAX_CLIENTS-1'),
 		NetBool("m_Active"),
 		NetIntAny("m_X"),
 		NetIntAny("m_Y"),
+	]),
+
+	NetMessageEx("Sv_EditorSpecCursor", "editor-spec-cursor@netmsg.ddnet.org", [
+		NetIntRange("m_ClientId", 0, 'MAX_CLIENTS-1'),
+		NetBool("m_Active"),
+		NetIntAny("m_CursorX"),
+		NetIntAny("m_CursorY"),
 	]),
 
 	NetMessageEx("Sv_PreInput", "preinput@netmsg.ddnet.org", [

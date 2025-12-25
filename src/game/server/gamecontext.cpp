@@ -13,6 +13,7 @@
 
 #include <base/logger.h>
 #include <base/math.h>
+#include <base/str.h>
 #include <base/system.h>
 
 #include <engine/console.h>
@@ -1136,6 +1137,20 @@ void CGameContext::OnTick()
 			pPlayer->PostPostTick();
 	}
 
+	if(Server()->Tick() % 5 == 0)
+	{
+		for(int i = 0; i < MAX_CLIENTS; ++i)
+		{
+			CPlayer *pPlayer = m_apPlayers[i];
+			if(!pPlayer || !pPlayer->IsEditorSpecActive())
+			{
+				continue;
+			}
+			const vec2 &Cursor = pPlayer->EditorSpecCursor();
+			SendEditorSpecCursorUpdate(i, true, round_to_int(Cursor.x), round_to_int(Cursor.y));
+		}
+	}
+
 	// update voting
 	if(m_VoteCloseTime)
 	{
@@ -1836,9 +1851,17 @@ void CGameContext::OnClientDrop(int ClientId, const char *pReason)
 
 	AbortVoteKickOnDisconnect(ClientId);
 	m_pController->OnPlayerDisconnect(m_apPlayers[ClientId], pReason);
-	if(m_apPlayers[ClientId] && m_apPlayers[ClientId]->m_TileCursorActive)
+	if(m_apPlayers[ClientId])
 	{
-		SendTileCursorUpdate(ClientId, false, m_apPlayers[ClientId]->m_TileCursor.x, m_apPlayers[ClientId]->m_TileCursor.y);
+		if(m_apPlayers[ClientId]->m_TileCursorActive)
+		{
+			SendTileCursorUpdate(ClientId, false, m_apPlayers[ClientId]->m_TileCursor.x, m_apPlayers[ClientId]->m_TileCursor.y);
+		}
+		if(m_apPlayers[ClientId]->IsEditorSpecActive())
+		{
+			const vec2 &Cursor = m_apPlayers[ClientId]->EditorSpecCursor();
+			SendEditorSpecCursorUpdate(ClientId, false, round_to_int(Cursor.x), round_to_int(Cursor.y));
+		}
 	}
 	delete m_apPlayers[ClientId];
 	m_apPlayers[ClientId] = nullptr;
@@ -2208,6 +2231,9 @@ void CGameContext::OnMessage(int MsgId, CUnpacker *pUnpacker, int ClientId)
 		case NETMSGTYPE_CL_SETTILECURSOR:
 			OnSetTileCursorNetMessage(static_cast<CNetMsg_Cl_SetTileCursor *>(pRawMsg), ClientId);
 			break;
+		case NETMSGTYPE_CL_SETEDITORSPECSTATE:
+			OnSetEditorSpecStateNetMessage(static_cast<CNetMsg_Cl_SetEditorSpecState *>(pRawMsg), ClientId);
+			break;
 		case NETMSGTYPE_CL_CAMERAINFO:
 			OnCameraInfoNetMessage(static_cast<CNetMsg_Cl_CameraInfo *>(pRawMsg), ClientId);
 			break;
@@ -2229,6 +2255,12 @@ void CGameContext::OnMessage(int MsgId, CUnpacker *pUnpacker, int ClientId)
 			ApplyTileModification(pMsg->m_Layer, pMsg->m_X, pMsg->m_Y, pMsg->m_Index, pMsg->m_Flags);
 			break;
 		}
+		case NETMSGTYPE_CL_REQUESTTILEAREA:
+			OnRequestTileAreaNetMessage(static_cast<CNetMsg_Cl_RequestTileArea *>(pRawMsg), ClientId);
+			break;
+		case NETMSGTYPE_CL_REQUESTTELETILEAREA:
+			OnRequestTeleTileAreaNetMessage(static_cast<CNetMsg_Cl_RequestTeleTileArea *>(pRawMsg), ClientId);
+			break;
 		case NETMSGTYPE_CL_ENABLESPECTATORCOUNT:
 			OnEnableSpectatorCountNetMessage(static_cast<CNetMsg_Cl_EnableSpectatorCount *>(pRawMsg), ClientId);
 		default:
@@ -2666,6 +2698,23 @@ void CGameContext::SendTileCursorUpdate(int ClientId, bool Active, int X, int Y)
 	Server()->SendPackMsg(&Msg, MSGFLAG_NORECORD, -1);
 }
 
+void CGameContext::SendEditorSpecCursorUpdate(int ClientId, bool Active, int CursorX, int CursorY)
+{
+	CNetMsg_Sv_EditorSpecCursor Msg;
+	Msg.m_ClientId = ClientId;
+	Msg.m_Active = Active;
+	Msg.m_CursorX = CursorX;
+	Msg.m_CursorY = CursorY;
+	for(int i = 0; i < MAX_CLIENTS; ++i)
+	{
+		if(i == ClientId || !Server()->ClientIngame(i))
+		{
+			continue;
+		}
+		Server()->SendPackMsg(&Msg, MSGFLAG_VITAL | MSGFLAG_NORECORD, i);
+	}
+}
+
 void CGameContext::OnSetTeamNetMessage(const CNetMsg_Cl_SetTeam *pMsg, int ClientId)
 {
 	if(m_World.m_Paused)
@@ -2788,6 +2837,135 @@ void CGameContext::OnSetTileCursorNetMessage(const CNetMsg_Cl_SetTileCursor *pMs
 	}
 
 	SendTileCursorUpdate(ClientId, Active, NewCursor.x, NewCursor.y);
+}
+
+void CGameContext::OnSetEditorSpecStateNetMessage(const CNetMsg_Cl_SetEditorSpecState *pMsg, int ClientId)
+{
+	CPlayer *pPlayer = m_apPlayers[ClientId];
+	if(!pPlayer)
+	{
+		return;
+	}
+
+	const vec2 Cursor((float)pMsg->m_CursorX, (float)pMsg->m_CursorY);
+
+	if(pMsg->m_Active && (!pPlayer->GetCharacter() || !pPlayer->GetCharacter()->IsAlive()))
+	{
+		return;
+	}
+
+	pPlayer->SetEditorSpecState(pMsg->m_Active, Cursor);
+}
+
+void CGameContext::OnRequestTileAreaNetMessage(const CNetMsg_Cl_RequestTileArea *pMsg, int ClientId)
+{
+	(void)ClientId;
+	if(!pMsg)
+	{
+		return;
+	}
+
+	const int Width = pMsg->m_Width;
+	const int Height = pMsg->m_Height;
+	const int64_t TileCount = int64_t(Width) * Height;
+	if(Width <= 0 || Height <= 0 || TileCount > MAX_TILE_AREA_ITEMS)
+	{
+		return;
+	}
+
+	if(!IsTileRectInsideLayer(pMsg->m_Layer, pMsg->m_X, pMsg->m_Y, Width, Height))
+	{
+		return;
+	}
+
+	int ModeValue = pMsg->m_Mode;
+	if(ModeValue < 0)
+	{
+		ModeValue = 0;
+	}
+	else if(ModeValue > 1)
+	{
+		ModeValue = 1;
+	}
+	const ETileToolAreaMode Mode = static_cast<ETileToolAreaMode>(ModeValue);
+	const bool Destructive = pMsg->m_Destructive;
+
+	if(Mode == ETileToolAreaMode::Fill)
+	{
+		ApplyTileRectangleFill(pMsg->m_Layer, pMsg->m_X, pMsg->m_Y, Width, Height, pMsg->m_Index, pMsg->m_Flags);
+		return;
+	}
+
+	if(!pMsg->m_pPattern)
+	{
+		return;
+	}
+
+	const int EncodedLen = str_length(pMsg->m_pPattern);
+	if(EncodedLen <= 0)
+	{
+		return;
+	}
+
+	std::vector<unsigned char> Decoded(((EncodedLen + 3) / 4) * 3);
+	const int BytesWritten = str_base64_decode(Decoded.data(), (int)Decoded.size(), pMsg->m_pPattern);
+	if(BytesWritten < 0)
+	{
+		return;
+	}
+	Decoded.resize(BytesWritten);
+	if((int)Decoded.size() != TileCount * 2)
+	{
+		return;
+	}
+
+	ApplyTilePattern(pMsg->m_Layer, pMsg->m_X, pMsg->m_Y, Width, Height, Decoded.data(), Decoded.size(), Destructive);
+}
+
+void CGameContext::OnRequestTeleTileAreaNetMessage(const CNetMsg_Cl_RequestTeleTileArea *pMsg, int ClientId)
+{
+	(void)ClientId;
+	if(!pMsg)
+	{
+		return;
+	}
+
+	const int Width = pMsg->m_Width;
+	const int Height = pMsg->m_Height;
+	const bool Destructive = pMsg->m_Destructive;
+	const int64_t TileCount = int64_t(Width) * Height;
+	if(Width <= 0 || Height <= 0 || TileCount > MAX_TILE_AREA_ITEMS)
+	{
+		return;
+	}
+	if(!IsTileRectInsideLayer(LAYER_TELE, pMsg->m_X, pMsg->m_Y, Width, Height))
+	{
+		return;
+	}
+	if(!pMsg->m_pPayload)
+	{
+		return;
+	}
+
+	const int EncodedLen = str_length(pMsg->m_pPayload);
+	if(EncodedLen <= 0)
+	{
+		return;
+	}
+
+	std::vector<unsigned char> Decoded(((EncodedLen + 3) / 4) * 3);
+	const int BytesWritten = str_base64_decode(Decoded.data(), (int)Decoded.size(), pMsg->m_pPayload);
+	if(BytesWritten < 0)
+	{
+		return;
+	}
+	Decoded.resize(BytesWritten);
+	if(Decoded.size() != size_t(TileCount) * 3)
+	{
+		return;
+	}
+
+	ApplyTeleTilePattern(pMsg->m_X, pMsg->m_Y, Width, Height, Decoded.data(), Decoded.size(), Destructive);
 }
 
 void CGameContext::OnCameraInfoNetMessage(const CNetMsg_Cl_CameraInfo *pMsg, int ClientId)
@@ -4691,6 +4869,27 @@ CTile *TileLayerData(IMap *pMap, CMapItemLayerTilemap *pTilemap, int Layer)
 
 	return static_cast<CTile *>(pMap->GetData(DataIndex));
 }
+
+CTeleTile *TeleLayerExtraData(IMap *pMap, CMapItemLayerTilemap *pTilemap)
+{
+	if(!pMap || !pTilemap)
+	{
+		return nullptr;
+	}
+
+	if(pTilemap->m_Tele < 0)
+	{
+		return nullptr;
+	}
+
+	const size_t ExpectedSize = (size_t)pTilemap->m_Width * pTilemap->m_Height * sizeof(CTeleTile);
+	if(static_cast<size_t>(pMap->GetDataSize(pTilemap->m_Tele)) < ExpectedSize)
+	{
+		return nullptr;
+	}
+
+	return static_cast<CTeleTile *>(pMap->GetData(pTilemap->m_Tele));
+}
 }
 
 bool CGameContext::ApplyTileModification(int Layer, int X, int Y, int Index, int Flags)
@@ -4738,6 +4937,220 @@ bool CGameContext::ApplyTileModification(int Layer, int X, int Y, int Index, int
 	Msg.m_Flags = Flags;
 	Server()->SendPackMsg(&Msg, MSGFLAG_VITAL | MSGFLAG_NORECORD, -1);
 	return true;
+}
+
+bool CGameContext::IsTileRectInsideLayer(int Layer, int X, int Y, int Width, int Height) const
+{
+	const CLayers *pLayers = &m_Layers;
+	CMapItemLayerTilemap *pTilemap = const_cast<CLayers *>(pLayers)->GetTilemapForLayer(Layer);
+	if(!pTilemap)
+	{
+		return false;
+	}
+	if(X < 0 || Y < 0 || Width <= 0 || Height <= 0)
+	{
+		return false;
+	}
+	if(X + Width > pTilemap->m_Width || Y + Height > pTilemap->m_Height)
+	{
+		return false;
+	}
+	return true;
+}
+
+bool CGameContext::ApplyTileRectangleFill(int Layer, int X, int Y, int Width, int Height, int Index, int Flags)
+{
+	if(!IsTileRectInsideLayer(Layer, X, Y, Width, Height))
+	{
+		return false;
+	}
+
+	bool Modified = false;
+	for(int Row = 0; Row < Height; ++Row)
+	{
+		for(int Column = 0; Column < Width; ++Column)
+		{
+			Modified |= ApplyTileModification(Layer, X + Column, Y + Row, Index, Flags);
+		}
+	}
+	return Modified;
+}
+
+bool CGameContext::ApplyTilePattern(int Layer, int X, int Y, int Width, int Height, const unsigned char *pTileBytes, size_t ByteCount, bool Destructive)
+{
+	if(!pTileBytes)
+	{
+		return false;
+	}
+	const size_t ExpectedBytes = size_t(Width) * Height * 2;
+	if(!IsTileRectInsideLayer(Layer, X, Y, Width, Height) || ByteCount != ExpectedBytes)
+	{
+		return false;
+	}
+
+	CLayers *pLayers = &m_Layers;
+	IMap *pMap = pLayers->Map();
+	CMapItemLayerTilemap *pTilemap = pLayers->GetTilemapForLayer(Layer);
+	if(!pMap || !pTilemap)
+	{
+		return false;
+	}
+	CTile *pTiles = TileLayerData(pMap, pTilemap, Layer);
+	if(!pTiles)
+	{
+		return false;
+	}
+	const int MapWidth = pTilemap->m_Width;
+
+	bool Modified = false;
+	for(int Row = 0; Row < Height; ++Row)
+	{
+		for(int Column = 0; Column < Width; ++Column)
+		{
+			const size_t Offset = size_t(Row * Width + Column) * 2;
+			const int Index = pTileBytes[Offset];
+			const int Flags = pTileBytes[Offset + 1];
+			const int TargetTileIndex = (Y + Row) * MapWidth + (X + Column);
+			const CTile &ExistingTile = pTiles[TargetTileIndex];
+			if(!Destructive)
+			{
+				if(Index == TILE_AIR || ExistingTile.m_Index != TILE_AIR)
+				{
+					continue;
+				}
+			}
+			if(Destructive && Layer == LAYER_GAME && Index == TILE_AIR)
+			{
+				Modified = ApplyTileModification(LAYER_FRONT, X + Column, Y + Row, TILE_AIR, 0) || Modified;
+			}
+			Modified |= ApplyTileModification(Layer, X + Column, Y + Row, Index, Flags);
+		}
+	}
+	return Modified;
+}
+
+bool CGameContext::ApplyTeleTileModification(int X, int Y, int Index, int Flags, int Number)
+{
+	CLayers *pLayers = &m_Layers;
+	IMap *pMap = pLayers->Map();
+	CMapItemLayerTilemap *pTilemap = pLayers->GetTilemapForLayer(LAYER_TELE);
+	if(!pMap || !pTilemap)
+	{
+		return false;
+	}
+	if(X < 0 || X >= pTilemap->m_Width || Y < 0 || Y >= pTilemap->m_Height)
+	{
+		return false;
+	}
+
+	if(Index != TILE_AIR && !IsValidTeleTile(Index))
+	{
+		return false;
+	}
+
+	CTile *pTiles = TileLayerData(pMap, pTilemap, LAYER_TELE);
+	CTeleTile *pTeleTiles = TeleLayerExtraData(pMap, pTilemap);
+	if(!pTiles || !pTeleTiles)
+	{
+		return false;
+	}
+
+	const int TileIndex = Y * pTilemap->m_Width + X;
+	CTile &Tile = pTiles[TileIndex];
+	CTeleTile &TeleTile = pTeleTiles[TileIndex];
+	const int ClampedNumber = Index == TILE_AIR ? 0 : std::clamp(Number, 0, 255);
+	const int EffectiveType = Index == TILE_AIR ? 0 : Index;
+	if(Tile.m_Index == Index && Tile.m_Flags == Flags && TeleTile.m_Number == ClampedNumber && TeleTile.m_Type == EffectiveType)
+	{
+		return false;
+	}
+
+	Tile.m_Index = Index;
+	Tile.m_Flags = Flags;
+	TeleTile.m_Type = EffectiveType;
+	TeleTile.m_Number = ClampedNumber;
+
+	CNetMsg_Sv_ModifyTile TileMsg;
+	TileMsg.m_X = X;
+	TileMsg.m_Y = Y;
+	TileMsg.m_Layer = LAYER_TELE;
+	TileMsg.m_Index = Index;
+	TileMsg.m_Flags = Flags;
+	Server()->SendPackMsg(&TileMsg, MSGFLAG_VITAL | MSGFLAG_NORECORD, -1);
+
+	CNetMsg_Sv_ModifyTeleTile TeleMsg;
+	TeleMsg.m_X = X;
+	TeleMsg.m_Y = Y;
+	TeleMsg.m_Index = Index;
+	TeleMsg.m_Flags = Flags;
+	TeleMsg.m_Number = ClampedNumber;
+	Server()->SendPackMsg(&TeleMsg, MSGFLAG_VITAL | MSGFLAG_NORECORD, -1);
+	return true;
+}
+
+bool CGameContext::ApplyTeleTilePattern(int X, int Y, int Width, int Height, const unsigned char *pTileBytes, size_t ByteCount, bool Destructive)
+{
+	if(!pTileBytes)
+	{
+		return false;
+	}
+	if(Width <= 0 || Height <= 0)
+	{
+		return false;
+	}
+	const int64_t TileCount = int64_t(Width) * Height;
+	if(TileCount > MAX_TILE_AREA_ITEMS)
+	{
+		return false;
+	}
+	if(!IsTileRectInsideLayer(LAYER_TELE, X, Y, Width, Height))
+	{
+		return false;
+	}
+
+	const size_t ExpectedBytes = size_t(TileCount) * 3;
+	if(ByteCount != ExpectedBytes)
+	{
+		return false;
+	}
+
+	CLayers *pLayers = &m_Layers;
+	IMap *pMap = pLayers->Map();
+	CMapItemLayerTilemap *pTilemap = pLayers->GetTilemapForLayer(LAYER_TELE);
+	if(!pMap || !pTilemap)
+	{
+		return false;
+	}
+	CTile *pTiles = TileLayerData(pMap, pTilemap, LAYER_TELE);
+	CTeleTile *pTeleTiles = TeleLayerExtraData(pMap, pTilemap);
+	if(!pTiles || !pTeleTiles)
+	{
+		return false;
+	}
+	const int MapWidth = pTilemap->m_Width;
+
+	bool Modified = false;
+	for(int Row = 0; Row < Height; ++Row)
+	{
+		for(int Column = 0; Column < Width; ++Column)
+		{
+			const size_t Offset = size_t(Row * Width + Column) * 3;
+			const int Index = pTileBytes[Offset];
+			const int Flags = pTileBytes[Offset + 1];
+			const int Number = pTileBytes[Offset + 2];
+			const int TargetTileIndex = (Y + Row) * MapWidth + (X + Column);
+			const CTile &ExistingTile = pTiles[TargetTileIndex];
+			if(!Destructive)
+			{
+				if(Index == TILE_AIR || ExistingTile.m_Index != TILE_AIR)
+				{
+					continue;
+				}
+			}
+			Modified |= ApplyTeleTileModification(X + Column, Y + Row, Index, Flags, Number);
+		}
+	}
+	return Modified;
 }
 
 void CGameContext::TestLiveTileModification()

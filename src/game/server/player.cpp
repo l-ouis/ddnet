@@ -7,6 +7,7 @@
 #include "gamecontroller.h"
 #include "score.h"
 
+#include <base/math.h>
 #include <base/system.h>
 
 #include <engine/antibot.h>
@@ -119,6 +120,9 @@ void CPlayer::Reset()
 	m_TileCursor = ivec2(-1, -1);
 	m_SpecTeam = false;
 	m_NinjaJetpack = false;
+	m_EditorSpecActive = false;
+	m_EditorSpecHoverPos = vec2(0.0f, 0.0f);
+	m_EditorSpecCursor = vec2(0.0f, 0.0f);
 
 	m_Paused = PAUSE_NONE;
 	m_DND = false;
@@ -407,7 +411,7 @@ void CPlayer::Snap(int SnappingClient)
 			pDDNetSpectatorInfo->m_Deadzone = pSpecPlayer->m_CameraInfo.m_Deadzone;
 			pDDNetSpectatorInfo->m_FollowFactor = pSpecPlayer->m_CameraInfo.m_FollowFactor;
 
-			if(pSpecPlayer->m_EnableSpectatorCount && SpectatingClient == TranslatedId && SnappingClient != SERVER_DEMO_CLIENT && m_Team != TEAM_SPECTATORS && !m_Paused)
+			if(pSpecPlayer->m_EnableSpectatorCount && SpectatingClient == TranslatedId && SnappingClient != SERVER_DEMO_CLIENT && m_Team != TEAM_SPECTATORS && !m_Paused && !m_EditorSpecActive)
 			{
 				CNetObj_SpectatorCount *pSpectatorCount = Server()->SnapNewItem<CNetObj_SpectatorCount>(0);
 				if(!pSpectatorCount)
@@ -419,7 +423,7 @@ void CPlayer::Snap(int SnappingClient)
 				{
 					if(!pPlayer || !pPlayer->m_EnableSpectatorCount || pPlayer->m_ClientId == TranslatedId || pPlayer->m_Afk ||
 						(Server()->IsRconAuthed(pPlayer->m_ClientId) && Server()->HasAuthHidden(pPlayer->m_ClientId)) ||
-						!(pPlayer->m_Paused || pPlayer->m_Team == TEAM_SPECTATORS))
+						!(pPlayer->m_Paused || pPlayer->m_Team == TEAM_SPECTATORS || pPlayer->m_EditorSpecActive))
 					{
 						continue;
 					}
@@ -537,6 +541,7 @@ void CPlayer::FakeSnap()
 void CPlayer::OnDisconnect()
 {
 	KillCharacter();
+	m_EditorSpecActive = false;
 
 	m_Moderating = false;
 }
@@ -551,7 +556,7 @@ void CPlayer::OnPredictedInput(const CNetObj_PlayerInput *pNewInput)
 
 	m_NumInputs++;
 
-	if(m_pCharacter && !m_Paused && !(pNewInput->m_PlayerFlags & PLAYERFLAG_SPEC_CAM))
+	if(m_pCharacter && !m_Paused && !m_EditorSpecActive && !(pNewInput->m_PlayerFlags & PLAYERFLAG_SPEC_CAM))
 		m_pCharacter->OnPredictedInput(pNewInput);
 
 	// Magic number when we can hope that client has successfully identified itself
@@ -565,7 +570,7 @@ void CPlayer::OnDirectInput(const CNetObj_PlayerInput *pNewInput)
 
 	AfkTimer();
 
-	if(((pNewInput->m_PlayerFlags & PLAYERFLAG_SPEC_CAM) || GetClientVersion() < VERSION_DDNET_PLAYERFLAG_SPEC_CAM) && ((!m_pCharacter && m_Team == TEAM_SPECTATORS) || m_Paused) && m_SpectatorId == SPEC_FREEVIEW)
+	if(((pNewInput->m_PlayerFlags & PLAYERFLAG_SPEC_CAM) || GetClientVersion() < VERSION_DDNET_PLAYERFLAG_SPEC_CAM) && (((!m_pCharacter && m_Team == TEAM_SPECTATORS) || m_Paused) || m_EditorSpecActive) && m_SpectatorId == SPEC_FREEVIEW)
 		m_ViewPos = vec2(pNewInput->m_TargetX, pNewInput->m_TargetY);
 
 	// check for activity
@@ -596,7 +601,7 @@ void CPlayer::OnPredictedEarlyInput(const CNetObj_PlayerInput *pNewInput)
 	if(m_PlayerFlags & PLAYERFLAG_CHATTING)
 		return;
 
-	if(m_pCharacter && !m_Paused && !(m_PlayerFlags & PLAYERFLAG_SPEC_CAM))
+	if(m_pCharacter && !m_Paused && !m_EditorSpecActive && !(m_PlayerFlags & PLAYERFLAG_SPEC_CAM))
 		m_pCharacter->OnDirectInput(pNewInput);
 }
 
@@ -627,6 +632,7 @@ void CPlayer::KillCharacter(int Weapon, bool SendKillMsg)
 
 		delete m_pCharacter;
 		m_pCharacter = nullptr;
+		m_EditorSpecActive = false;
 	}
 }
 
@@ -800,6 +806,39 @@ bool CPlayer::CanOverrideDefaultEmote() const
 bool CPlayer::CanSpec() const
 {
 	return m_pCharacter->IsGrounded() && m_pCharacter->m_Pos == m_pCharacter->m_PrevPos;
+}
+
+void CPlayer::SetEditorSpecState(bool Active, const vec2 &Cursor)
+{
+	const bool WasActive = m_EditorSpecActive;
+	const vec2 PreviousCursor = m_EditorSpecCursor;
+
+	if(!m_pCharacter)
+	{
+		m_EditorSpecActive = false;
+	}
+	else
+	{
+		m_EditorSpecCursor = Cursor;
+
+		if(Active)
+		{
+			m_EditorSpecHoverPos = m_pCharacter->m_Pos;
+			m_ViewPos = m_pCharacter->m_Pos;
+			m_EditorSpecActive = true;
+			SetSpectatorId(SPEC_FREEVIEW);
+		}
+		else if(m_EditorSpecActive)
+		{
+			m_EditorSpecActive = false;
+			m_ViewPos = m_pCharacter->m_Pos;
+		}
+	}
+
+	if((WasActive != m_EditorSpecActive || PreviousCursor != m_EditorSpecCursor) && m_pGameServer)
+	{
+		m_pGameServer->SendEditorSpecCursorUpdate(m_ClientId, m_EditorSpecActive, round_to_int(m_EditorSpecCursor.x), round_to_int(m_EditorSpecCursor.y));
+	}
 }
 
 void CPlayer::ProcessPause()

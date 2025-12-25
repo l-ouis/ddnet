@@ -71,7 +71,8 @@ void CControls::ConKeyInputState(IConsole::IResult *pResult, void *pUserData)
 {
 	CInputState *pState = (CInputState *)pUserData;
 
-	if(pState->m_pControls->GameClient()->m_GameInfo.m_BugDDRaceInput && pState->m_pControls->GameClient()->m_Snap.m_SpecInfo.m_Active)
+	if(pState->m_pControls->GameClient()->m_GameInfo.m_BugDDRaceInput &&
+		(pState->m_pControls->GameClient()->m_Snap.m_SpecInfo.m_Active || pState->m_pControls->GameClient()->EditorSpecActive()))
 		return;
 
 	*pState->m_apVariables[g_Config.m_ClDummy] = pResult->GetInteger(0);
@@ -81,7 +82,9 @@ void CControls::ConKeyInputCounter(IConsole::IResult *pResult, void *pUserData)
 {
 	CInputState *pState = (CInputState *)pUserData;
 
-	if((pState->m_pControls->GameClient()->m_GameInfo.m_BugDDRaceInput && pState->m_pControls->GameClient()->m_Snap.m_SpecInfo.m_Active) || pState->m_pControls->GameClient()->m_Spectator.IsActive())
+	if(((pState->m_pControls->GameClient()->m_GameInfo.m_BugDDRaceInput &&
+		(pState->m_pControls->GameClient()->m_Snap.m_SpecInfo.m_Active || pState->m_pControls->GameClient()->EditorSpecActive())) ||
+		pState->m_pControls->GameClient()->m_Spectator.IsActive()))
 		return;
 
 	int *pVariable = pState->m_apVariables[g_Config.m_ClDummy];
@@ -207,6 +210,8 @@ int CControls::SnapInput(int *pData)
 
 	if(Client()->ServerCapAnyPlayerFlag() && GameClient()->m_Controls.m_aShowHookColl[g_Config.m_ClDummy])
 		m_aInputData[g_Config.m_ClDummy].m_PlayerFlags |= PLAYERFLAG_AIM;
+
+	const bool EditorSpec = GameClient()->EditorSpecActive();
 
 	if(Client()->ServerCapAnyPlayerFlag() && GameClient()->m_Camera.CamType() == CCamera::CAMTYPE_SPEC)
 		m_aInputData[g_Config.m_ClDummy].m_PlayerFlags |= PLAYERFLAG_SPEC_CAM;
@@ -348,9 +353,9 @@ int CControls::SnapInput(int *pData)
 	const auto GetZoomedTileTarget = [&]() -> const vec2 & {
 		if(!HasZoomedTileTarget)
 		{
-			const vec2 LocalPos = GameClient()->m_LocalCharacterPos;
+			const vec2 ReferencePos = EditorSpec ? GameClient()->m_Controls.m_aMousePos[ActiveDummy] : GameClient()->m_LocalCharacterPos;
 			const float Zoom = GameClient()->m_Camera.m_Zoom;
-			ZoomedTileTarget = LocalPos + (m_aTargetPos[ActiveDummy] - LocalPos) * Zoom;
+			ZoomedTileTarget = ReferencePos + (m_aTargetPos[ActiveDummy] - ReferencePos) * Zoom;
 			HasZoomedTileTarget = true;
 		}
 		return ZoomedTileTarget;
@@ -364,6 +369,19 @@ int CControls::SnapInput(int *pData)
 		GameClient()->HandleTileToolClearInput(GetZoomedTileTarget(), TileToolClearPressed, TileToolClearHeld, TileToolClearReleased);
 	}
 	m_aLastTileToolClearState[ActiveDummy] = TileToolClearHeld ? 1 : 0;
+
+	if(EditorSpec)
+	{
+		CNetObj_PlayerInput &Input = m_aInputData[ActiveDummy];
+		const CNetObj_PlayerInput &LastInput = m_aLastData[ActiveDummy];
+		Input.m_Direction = 0;
+		Input.m_Jump = 0;
+		Input.m_Hook = 0;
+		Input.m_WantedWeapon = LastInput.m_WantedWeapon;
+		Input.m_NextWeapon = 0;
+		Input.m_PrevWeapon = 0;
+		Input.m_Fire = LastInput.m_Fire & ~1;
+	}
 
 	// copy and return size
 	m_aLastData[g_Config.m_ClDummy] = m_aInputData[g_Config.m_ClDummy];
@@ -405,7 +423,9 @@ void CControls::OnRender()
 	}
 
 	// update target pos
-	if(GameClient()->m_Snap.m_pGameInfoObj && !GameClient()->m_Snap.m_SpecInfo.m_Active)
+	const bool EditorSpec = GameClient()->EditorSpecActive();
+	const bool IsSpectating = GameClient()->m_Snap.m_SpecInfo.m_Active || EditorSpec;
+	if(GameClient()->m_Snap.m_pGameInfoObj && !IsSpectating)
 	{
 		// make sure to compensate for smooth dyncam to ensure the cursor stays still in world space if zoomed
 		vec2 DyncamOffsetDelta = GameClient()->m_Camera.m_DyncamTargetCameraOffset - GameClient()->m_Camera.m_aDyncamCurrentCameraOffset[g_Config.m_ClDummy];
@@ -427,7 +447,8 @@ bool CControls::OnCursorMove(float x, float y, IInput::ECursorType CursorType)
 	if(GameClient()->m_Snap.m_pGameInfoObj && (GameClient()->m_Snap.m_pGameInfoObj->m_GameStateFlags & GAMESTATEFLAG_PAUSED))
 		return false;
 
-	if(CursorType == IInput::CURSOR_JOYSTICK && g_Config.m_InpControllerAbsolute && GameClient()->m_Snap.m_pGameInfoObj && !GameClient()->m_Snap.m_SpecInfo.m_Active)
+	const bool IsSpectating = GameClient()->m_Snap.m_SpecInfo.m_Active || GameClient()->EditorSpecActive();
+	if(CursorType == IInput::CURSOR_JOYSTICK && g_Config.m_InpControllerAbsolute && GameClient()->m_Snap.m_pGameInfoObj && !IsSpectating)
 	{
 		vec2 AbsoluteDirection;
 		if(Input()->GetActiveJoystick()->Absolute(&AbsoluteDirection.x, &AbsoluteDirection.y))
@@ -458,7 +479,8 @@ bool CControls::OnCursorMove(float x, float y, IInput::ECursorType CursorType)
 		}
 	}
 
-	if(GameClient()->m_Snap.m_SpecInfo.m_Active && GameClient()->m_Snap.m_SpecInfo.m_SpectatorId < 0)
+	const bool FreeView = (GameClient()->m_Snap.m_SpecInfo.m_Active && GameClient()->m_Snap.m_SpecInfo.m_SpectatorId < 0) || GameClient()->EditorSpecActive();
+	if(FreeView)
 		Factor *= GameClient()->m_Camera.m_Zoom;
 
 	m_aMousePos[g_Config.m_ClDummy] += vec2(x, y) * Factor;
@@ -469,7 +491,8 @@ bool CControls::OnCursorMove(float x, float y, IInput::ECursorType CursorType)
 
 void CControls::ClampMousePos()
 {
-	if(GameClient()->m_Snap.m_SpecInfo.m_Active && GameClient()->m_Snap.m_SpecInfo.m_SpectatorId < 0)
+	const bool FreeView = (GameClient()->m_Snap.m_SpecInfo.m_Active && GameClient()->m_Snap.m_SpecInfo.m_SpectatorId < 0) || GameClient()->EditorSpecActive();
+	if(FreeView)
 	{
 		m_aMousePos[g_Config.m_ClDummy].x = std::clamp(m_aMousePos[g_Config.m_ClDummy].x, -201.0f * 32, (Collision()->GetWidth() + 201.0f) * 32.0f);
 		m_aMousePos[g_Config.m_ClDummy].y = std::clamp(m_aMousePos[g_Config.m_ClDummy].y, -201.0f * 32, (Collision()->GetHeight() + 201.0f) * 32.0f);

@@ -45,6 +45,7 @@
 
 #include <base/log.h>
 #include <base/math.h>
+#include <base/str.h>
 #include <base/system.h>
 #include <base/vmath.h>
 
@@ -78,6 +79,8 @@
 #include <game/version.h>
 
 #include <algorithm>
+#include <string>
+#include <vector>
 #include <array>
 #include <chrono>
 #include <limits>
@@ -184,6 +187,7 @@ void CGameClient::OnConsoleInit()
 					      &m_DamageInd,
 					      &m_Hud,
 					      &m_Spectator,
+					      &m_EditorSpec,
 					      &m_Emoticon,
 					      &m_InfoMessages,
 					      &m_Chat,
@@ -208,6 +212,7 @@ void CGameClient::OnConsoleInit()
 						  &m_Scoreboard,
 						  &m_Motd, // for pressing esc to remove it
 						  &m_Spectator,
+					  &m_EditorSpec,
 						  &m_Emoticon,
 						  &m_ImportantAlert,
 						  &m_Menus,
@@ -229,6 +234,8 @@ void CGameClient::OnConsoleInit()
 	Console()->Register("ready_change", "", CFGFLAG_CLIENT, ConReadyChange7, this, "Change ready state (0.7 only)");
 	Console()->Register("cl_request_tile_change", "i[layer]i[x]i[y]i[index]i[flags]", CFGFLAG_CLIENT, ConRequestTileChange, this, "Request the server to modify a tile (test feature)");
 	Console()->Register("tiletool_clear_cursor", "", CFGFLAG_CLIENT, ConTileToolClearCursor, this, "Replace the tile under the tile tool cursor with air on game/front layers");
+	Console()->Register("tiletool_fill_rect", "i[layer]i[x]i[y]i[w]i[h]i[index]i[flags]", CFGFLAG_CLIENT, ConTileToolFillRect, this, "Fill a rectangle in the specified layer using the selected tile index/flags");
+	Console()->Register("tiletool_paste_pattern", "i[layer]i[x]i[y]i[w]i[h]s[pattern_base64]", CFGFLAG_CLIENT, ConTileToolPastePattern, this, "Paste a base64-encoded tile pattern (pairs of index/flags bytes) into the selected layer");
 
 	// register game commands to allow the client prediction to load settings from the map
 	Console()->Register("tune", "s[tuning] ?f[value]", CFGFLAG_GAME, ConTuneParam, this, "Tune variable to value");
@@ -398,6 +405,22 @@ CTile *EditableLayerTileData(IMap *pMap, const CMapItemLayerTilemap *pTilemap, i
 	}
 
 	return static_cast<CTile *>(pMap->GetData(DataIndex));
+}
+
+CTeleTile *EditableTeleLayerData(IMap *pMap, const CMapItemLayerTilemap *pTilemap)
+{
+	if(!pMap || !pTilemap || pTilemap->m_Tele < 0)
+	{
+		return nullptr;
+	}
+
+	const size_t ExpectedSize = (size_t)pTilemap->m_Width * pTilemap->m_Height * sizeof(CTeleTile);
+	if(static_cast<size_t>(pMap->GetDataSize(pTilemap->m_Tele)) < ExpectedSize)
+	{
+		return nullptr;
+	}
+
+	return static_cast<CTeleTile *>(pMap->GetData(pTilemap->m_Tele));
 }
 
 } // namespace
@@ -1381,6 +1404,37 @@ void CGameClient::OnMessage(int MsgId, CUnpacker *pUnpacker, int Conn, bool Dumm
 
 		RefreshTileLayer(pTilemap);
 	}
+	else if(MsgId == NETMSGTYPE_SV_MODIFYTELETILE)
+	{
+		const auto *pMsg = static_cast<CNetMsg_Sv_ModifyTeleTile *>(pRawMsg);
+		CLayers *pLayers = Layers();
+		IMap *pMap = pLayers->Map();
+		CMapItemLayerTilemap *pTelemap = pLayers->GetTilemapForLayer(LAYER_TELE);
+		if(!pMap || !pTelemap)
+		{
+			return;
+		}
+		if(pMsg->m_X < 0 || pMsg->m_X >= pTelemap->m_Width || pMsg->m_Y < 0 || pMsg->m_Y >= pTelemap->m_Height)
+		{
+			return;
+		}
+
+		CTile *pTiles = EditableLayerTileData(pMap, pTelemap, LAYER_TELE);
+		CTeleTile *pTeleTiles = EditableTeleLayerData(pMap, pTelemap);
+		if(!pTiles || !pTeleTiles)
+		{
+			return;
+		}
+
+		const int TileIndex = pMsg->m_Y * pTelemap->m_Width + pMsg->m_X;
+		CTile &Tile = pTiles[TileIndex];
+		Tile.m_Index = pMsg->m_Index;
+		Tile.m_Flags = pMsg->m_Flags;
+		CTeleTile &TeleTile = pTeleTiles[TileIndex];
+		TeleTile.m_Type = pMsg->m_Index == TILE_AIR ? 0 : pMsg->m_Index;
+		TeleTile.m_Number = std::clamp(pMsg->m_Number, 0, 255);
+		RefreshTileLayer(pTelemap);
+	}
 	else if(MsgId == NETMSGTYPE_SV_TILECURSOR)
 	{
 		const auto *pMsg = static_cast<CNetMsg_Sv_TileCursor *>(pRawMsg);
@@ -1396,6 +1450,19 @@ void CGameClient::OnMessage(int MsgId, CUnpacker *pUnpacker, int Conn, bool Dumm
 			{
 				ClientData.m_TileCursorActive = false;
 				ClientData.m_TileCursor = ivec2(-1, -1);
+			}
+		}
+	}
+	else if(MsgId == NETMSGTYPE_SV_EDITORSPECCURSOR)
+	{
+		const auto *pMsg = static_cast<CNetMsg_Sv_EditorSpecCursor *>(pRawMsg);
+		if(pMsg->m_ClientId >= 0 && pMsg->m_ClientId < MAX_CLIENTS)
+		{
+			CClientData &ClientData = m_aClients[pMsg->m_ClientId];
+			ClientData.m_EditorSpecCursorActive = pMsg->m_Active;
+			if(pMsg->m_Active)
+			{
+				ClientData.m_EditorSpecCursor = vec2(pMsg->m_CursorX, pMsg->m_CursorY);
 			}
 		}
 	}
@@ -2695,10 +2762,48 @@ void CGameClient::OnPredict()
 	if(PredictDummy())
 		pDummyChar = m_PredictedWorld.GetCharacterById(m_aLocalIds[!g_Config.m_ClDummy]);
 
+	const auto DummyIndexFromClientId = [&](int ClientId) -> int {
+		for(int DummyIdx = 0; DummyIdx < NUM_DUMMIES; ++DummyIdx)
+		{
+			if(m_aLocalIds[DummyIdx] == ClientId)
+				return DummyIdx;
+		}
+		return -1;
+	};
+
+	const int LocalDummyIdx = DummyIndexFromClientId(m_Snap.m_LocalClientId);
+	const int DummyDummyIdx = DummyIndexFromClientId(m_PredictedDummyId);
+	const bool LocalEditorSpec = LocalDummyIdx >= 0 && EditorSpecActive(LocalDummyIdx);
+	const bool DummyEditorSpec = DummyDummyIdx >= 0 && EditorSpecActive(DummyDummyIdx);
+	const auto ApplyEditorSpecLock = [&](CCharacter *pChar, int DummyIdx, bool ActiveFlag) {
+		if(!ActiveFlag || DummyIdx < 0 || !pChar)
+			return;
+		CCharacterCore Core = pChar->GetCore();
+		if(!m_aEditorSpecLockPosValid[DummyIdx])
+		{
+			m_aEditorSpecLockPos[DummyIdx] = Core.m_Pos;
+			m_aEditorSpecLockPosValid[DummyIdx] = true;
+		}
+		const vec2 LockPos = m_aEditorSpecLockPos[DummyIdx];
+		Core.m_Pos = LockPos;
+		Core.m_Vel = vec2(0.0f, 0.0f);
+		Core.m_HookPos = LockPos;
+		Core.SetHookedPlayer(-1);
+		Core.m_HookState = HOOK_RETRACTED;
+		Core.m_TriggeredEvents = 0;
+		pChar->SetCore(Core);
+		pChar->m_Pos = LockPos;
+		pChar->m_PrevPos = LockPos;
+		pChar->m_PrevPrevPos = LockPos;
+	};
+
 	int PredictionTick = Client()->GetPredictionTick();
 	// predict
 	for(int Tick = Client()->GameTick(g_Config.m_ClDummy) + 1; Tick <= Client()->PredGameTick(g_Config.m_ClDummy); Tick++)
 	{
+		ApplyEditorSpecLock(pLocalChar, LocalDummyIdx, LocalEditorSpec);
+		ApplyEditorSpecLock(pDummyChar, DummyDummyIdx, DummyEditorSpec);
+
 		// fetch the previous characters
 		if(Tick == PredictionTick)
 		{
@@ -2723,13 +2828,13 @@ void CGameClient::OnPredict()
 		// apply inputs and tick
 		CNetObj_PlayerInput *pInputData = (CNetObj_PlayerInput *)Client()->GetInput(Tick, m_IsDummySwapping);
 		CNetObj_PlayerInput *pDummyInputData = !pDummyChar ? nullptr : (CNetObj_PlayerInput *)Client()->GetInput(Tick, m_IsDummySwapping ^ 1);
-		bool DummyFirst = pInputData && pDummyInputData && pDummyChar->GetCid() < pLocalChar->GetCid();
+		bool DummyFirst = pInputData && pDummyInputData && pDummyChar && pDummyChar->GetCid() < pLocalChar->GetCid();
 
-		if(DummyFirst)
+		if(DummyFirst && !DummyEditorSpec)
 			pDummyChar->OnDirectInput(pDummyInputData);
-		if(pInputData)
+		if(pInputData && !LocalEditorSpec)
 			pLocalChar->OnDirectInput(pInputData);
-		if(pDummyInputData && !DummyFirst)
+		if(pDummyInputData && !DummyFirst && !DummyEditorSpec)
 			pDummyChar->OnDirectInput(pDummyInputData);
 
 		if(g_Config.m_ClAntiPingPreInput)
@@ -2763,9 +2868,9 @@ void CGameClient::OnPredict()
 		}
 
 		m_PredictedWorld.m_GameTick = Tick;
-		if(pInputData)
+		if(pInputData && !LocalEditorSpec)
 			pLocalChar->OnPredictedInput(pInputData);
-		if(pDummyInputData)
+		if(pDummyInputData && !DummyEditorSpec)
 			pDummyChar->OnPredictedInput(pDummyInputData);
 
 		if(g_Config.m_ClAntiPingPreInput)
@@ -2799,6 +2904,9 @@ void CGameClient::OnPredict()
 		}
 
 		m_PredictedWorld.Tick();
+
+		ApplyEditorSpecLock(pLocalChar, LocalDummyIdx, LocalEditorSpec);
+		ApplyEditorSpecLock(pDummyChar, DummyDummyIdx, DummyEditorSpec);
 
 		// fetch the current characters
 		if(Tick == PredictionTick)
@@ -3123,6 +3231,8 @@ void CGameClient::CClientData::Reset()
 	m_LiveFrozen = false;
 	m_TileCursorActive = false;
 	m_TileCursor = ivec2(-1, -1);
+	m_EditorSpecCursorActive = false;
+	m_EditorSpecCursor = vec2(0.0f, 0.0f);
 
 	m_Predicted.Reset();
 	m_PrevPredicted.Reset();
@@ -4715,6 +4825,65 @@ void CGameClient::ConTileToolClearCursor(IConsole::IResult *pResult, void *pUser
 	}
 }
 
+void CGameClient::ConTileToolFillRect(IConsole::IResult *pResult, void *pUserData)
+{
+	CGameClient *pSelf = static_cast<CGameClient *>(pUserData);
+	const int Layer = pResult->GetInteger(0);
+	const ivec2 TopLeft(pResult->GetInteger(1), pResult->GetInteger(2));
+	const int Width = pResult->GetInteger(3);
+	const int Height = pResult->GetInteger(4);
+	STileToolLayer LayerData;
+	LayerData.m_Index = pResult->GetInteger(5);
+	LayerData.m_Flags = pResult->GetInteger(6);
+	if(!pSelf->SendTileToolAreaFillRequest(Layer, TopLeft, Width, Height, LayerData))
+	{
+		pSelf->Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "client", "Failed to send tile fill request");
+	}
+}
+
+void CGameClient::ConTileToolPastePattern(IConsole::IResult *pResult, void *pUserData)
+{
+	CGameClient *pSelf = static_cast<CGameClient *>(pUserData);
+	const int Layer = pResult->GetInteger(0);
+	const ivec2 TopLeft(pResult->GetInteger(1), pResult->GetInteger(2));
+	const int Width = pResult->GetInteger(3);
+	const int Height = pResult->GetInteger(4);
+	const char *pPatternBase64 = pResult->GetString(5);
+	const int TileCount = Width * Height;
+	if(Width <= 0 || Height <= 0 || TileCount > MAX_TILE_AREA_ITEMS)
+	{
+		pSelf->Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "client", "Invalid rectangle dimensions for tile pattern");
+		return;
+	}
+
+	const int EncodedLen = str_length(pPatternBase64);
+	std::vector<unsigned char> Decoded(((EncodedLen + 3) / 4) * 3);
+	const int BytesWritten = str_base64_decode(Decoded.data(), (int)Decoded.size(), pPatternBase64);
+	if(BytesWritten < 0)
+	{
+		pSelf->Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "client", "Invalid base64 pattern payload");
+		return;
+	}
+	Decoded.resize(BytesWritten);
+	if((int)Decoded.size() != TileCount * 2)
+	{
+		pSelf->Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "client", "Tile pattern payload size mismatch");
+		return;
+	}
+
+	std::vector<STileToolLayer> Tiles(TileCount);
+	for(int i = 0; i < TileCount; ++i)
+	{
+		Tiles[i].m_Index = Decoded[i * 2];
+		Tiles[i].m_Flags = Decoded[i * 2 + 1];
+	}
+
+	if(!pSelf->SendTileToolPatternRequest(Layer, TopLeft, Width, Height, Tiles.data(), TileCount))
+	{
+		pSelf->Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "client", "Failed to send tile pattern paste request");
+	}
+}
+
 bool CGameClient::IsLocalTileToolEquipped() const
 {
 	if(Client()->State() != IClient::STATE_ONLINE)
@@ -4980,6 +5149,122 @@ void CGameClient::SendTileToolLine(const ivec2 &From, const ivec2 &To, STileTool
 	}
 }
 
+bool CGameClient::SendTileToolAreaRequest(int Layer, const ivec2 &TopLeft, int Width, int Height, ETileToolAreaMode Mode, int Index, int Flags, const char *pPatternBase64, bool Destructive)
+{
+	if(Width <= 0 || Height <= 0)
+	{
+		Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "client", "Tile area dimensions must be positive");
+		return false;
+	}
+	const int64_t TileCount = int64_t(Width) * Height;
+	if(TileCount > MAX_TILE_AREA_ITEMS)
+	{
+		Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "client", "Tile area is too large for a single request");
+		return false;
+	}
+
+	CNetMsg_Cl_RequestTileArea Msg;
+	Msg.m_Layer = Layer;
+	Msg.m_X = TopLeft.x;
+	Msg.m_Y = TopLeft.y;
+	Msg.m_Width = Width;
+	Msg.m_Height = Height;
+	Msg.m_Destructive = Destructive;
+	Msg.m_Mode = static_cast<int>(Mode);
+	Msg.m_Index = Index;
+	Msg.m_Flags = Flags;
+	Msg.m_pPattern = pPatternBase64 ? pPatternBase64 : "";
+	if(Client()->SendPackMsgActive(&Msg, MSGFLAG_VITAL))
+	{
+		Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "client", "Failed to send tile area request");
+		return false;
+	}
+	return true;
+}
+
+bool CGameClient::SendTileToolAreaFillRequest(int Layer, const ivec2 &TopLeft, int Width, int Height, const STileToolLayer &LayerData)
+{
+	return SendTileToolAreaRequest(Layer, TopLeft, Width, Height, ETileToolAreaMode::Fill, LayerData.m_Index, LayerData.m_Flags, "", true);
+}
+
+bool CGameClient::SendTileToolPatternRequest(int Layer, const ivec2 &TopLeft, int Width, int Height, const STileToolLayer *pTiles, int TileCount, bool Destructive)
+{
+	if(!pTiles)
+	{
+		Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "client", "No tile data supplied for pattern paste");
+		return false;
+	}
+	const int ExpectedCount = Width * Height;
+	if(Width <= 0 || Height <= 0 || TileCount != ExpectedCount)
+	{
+		Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "client", "Pattern dimensions do not match supplied tile data");
+		return false;
+	}
+	if(TileCount > MAX_TILE_AREA_ITEMS)
+	{
+		Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "client", "Tile pattern is too large for a single request");
+		return false;
+	}
+
+	std::vector<unsigned char> Packed(TileCount * 2);
+	for(int i = 0; i < TileCount; ++i)
+	{
+		Packed[i * 2] = std::clamp(pTiles[i].m_Index, 0, 255);
+		Packed[i * 2 + 1] = std::clamp(pTiles[i].m_Flags, 0, 255);
+	}
+
+	std::vector<char> Base64Buffer(((int)Packed.size() + 2) / 3 * 4 + 4);
+	str_base64(Base64Buffer.data(), (int)Base64Buffer.size(), Packed.data(), (int)Packed.size());
+	std::string PatternString(Base64Buffer.data());
+	return SendTileToolAreaRequest(Layer, TopLeft, Width, Height, ETileToolAreaMode::Pattern, 0, 0, PatternString.c_str(), Destructive);
+}
+
+bool CGameClient::SendTileToolTelePatternRequest(const ivec2 &TopLeft, int Width, int Height, const STeleTileToolLayer *pTiles, int TileCount, bool Destructive)
+{
+	if(!pTiles)
+	{
+		Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "client", "No tele tile data supplied for pattern paste");
+		return false;
+	}
+	const int ExpectedCount = Width * Height;
+	if(Width <= 0 || Height <= 0 || TileCount != ExpectedCount)
+	{
+		Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "client", "Tele pattern dimensions do not match supplied tile data");
+		return false;
+	}
+	if(TileCount > MAX_TILE_AREA_ITEMS)
+	{
+		Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "client", "Tele tile pattern is too large for a single request");
+		return false;
+	}
+
+	std::vector<unsigned char> Packed(TileCount * 3);
+	for(int i = 0; i < TileCount; ++i)
+	{
+		Packed[i * 3] = std::clamp(pTiles[i].m_Index, 0, 255);
+		Packed[i * 3 + 1] = std::clamp(pTiles[i].m_Flags, 0, 255);
+		Packed[i * 3 + 2] = std::clamp(pTiles[i].m_Number, 0, 255);
+	}
+
+	std::vector<char> Base64Buffer(((int)Packed.size() + 2) / 3 * 4 + 4);
+	str_base64(Base64Buffer.data(), (int)Base64Buffer.size(), Packed.data(), (int)Packed.size());
+	std::string Payload(Base64Buffer.data());
+
+	CNetMsg_Cl_RequestTeleTileArea Msg;
+	Msg.m_X = TopLeft.x;
+	Msg.m_Y = TopLeft.y;
+	Msg.m_Width = Width;
+	Msg.m_Height = Height;
+	Msg.m_Destructive = Destructive;
+	Msg.m_pPayload = Payload.c_str();
+	if(Client()->SendPackMsgActive(&Msg, MSGFLAG_VITAL))
+	{
+		Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "client", "Failed to send tele tile pattern request");
+		return false;
+	}
+	return true;
+}
+
 void CGameClient::UpdateTileCursorNetworkState(bool Active, const ivec2 &Tile, int Dummy)
 {
 	if(Dummy < 0 || Dummy >= NUM_DUMMIES)
@@ -5029,6 +5314,101 @@ void CGameClient::UpdateTileCursorNetworkState(bool Active, const ivec2 &Tile, i
 	{
 		LastCursorSent = ivec2(-1, -1);
 	}
+}
+
+bool CGameClient::SendEditorSpecState(bool Active, const vec2 &CursorWorld, int Dummy)
+{
+	CNetMsg_Cl_SetEditorSpecState Msg;
+	Msg.m_Active = Active;
+	Msg.m_CursorX = round_to_int(CursorWorld.x);
+	Msg.m_CursorY = round_to_int(CursorWorld.y);
+	if(Dummy < 0)
+	{
+		if(Client()->SendPackMsgActive(&Msg, MSGFLAG_VITAL))
+		{
+			Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "client", "Failed to send editorspec update");
+			return false;
+		}
+	}
+	else
+	{
+		const int NormalizedDummy = NormalizeEditorSpecDummy(Dummy);
+		if(NormalizedDummy < 0)
+		{
+			return true;
+		}
+		const int Conn = NormalizedDummy ? IClient::CONN_DUMMY : IClient::CONN_MAIN;
+		if(Client()->SendPackMsg(Conn, &Msg, MSGFLAG_VITAL))
+		{
+			Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "client", "Failed to send editorspec update");
+			return false;
+		}
+	}
+	return true;
+}
+
+int CGameClient::NormalizeEditorSpecDummy(int Dummy) const
+{
+	int Result = Dummy;
+	if(Result < 0)
+		Result = g_Config.m_ClDummy;
+	if(Result < 0 || Result >= NUM_DUMMIES)
+		return -1;
+	if(Result == 1 && !Client()->DummyConnected())
+		return -1;
+	return Result;
+}
+
+void CGameClient::SetEditorSpecActive(bool Active, int Dummy)
+{
+	const int NormalizedDummy = NormalizeEditorSpecDummy(Dummy);
+	if(NormalizedDummy < 0)
+		return;
+	m_aEditorSpecActive[NormalizedDummy] = Active;
+	if(Active)
+	{
+		vec2 LockPos = vec2(0.0f, 0.0f);
+		bool LockPosValid = false;
+		if(NormalizedDummy == g_Config.m_ClDummy)
+		{
+			LockPos = m_LocalCharacterPos;
+			LockPosValid = true;
+		}
+		else
+		{
+			const int ClientId = m_aLocalIds[NormalizedDummy];
+			if(ClientId >= 0)
+			{
+				LockPos = m_aClients[ClientId].m_Predicted.m_Pos;
+				LockPosValid = true;
+			}
+		}
+		if(!LockPosValid && NormalizedDummy == g_Config.m_ClDummy && m_Snap.m_pLocalCharacter)
+		{
+			LockPos = vec2(m_Snap.m_pLocalCharacter->m_X, m_Snap.m_pLocalCharacter->m_Y);
+			LockPosValid = true;
+		}
+		m_aEditorSpecLockPos[NormalizedDummy] = LockPos;
+		m_aEditorSpecLockPosValid[NormalizedDummy] = LockPosValid;
+	}
+	else
+	{
+		m_aEditorSpecLockPosValid[NormalizedDummy] = false;
+	}
+}
+
+bool CGameClient::EditorSpecActive(int Dummy) const
+{
+	const int NormalizedDummy = NormalizeEditorSpecDummy(Dummy);
+	return NormalizedDummy >= 0 && m_aEditorSpecActive[NormalizedDummy];
+}
+
+int CGameClient::ClientIdForDummy(int Dummy) const
+{
+	const int NormalizedDummy = NormalizeEditorSpecDummy(Dummy);
+	if(NormalizedDummy < 0)
+		return -1;
+	return m_aLocalIds[NormalizedDummy];
 }
 
 void CGameClient::HandleTileToolInput(const vec2 &WorldTargetPos, bool FirePressed, bool FireHeld, bool FireReleased)
@@ -5106,6 +5486,12 @@ void CGameClient::RenderTileToolTargetIndicator()
 	const auto DeactivateCursor = [&]() {
 		UpdateTileCursorNetworkState(false, InvalidCursor, ControlledDummy);
 	};
+
+	if(EditorSpecActive())
+	{
+		DeactivateCursor();
+		return;
+	}
 
 	if(!IsLocalTileToolEquipped())
 	{

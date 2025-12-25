@@ -313,6 +313,7 @@ public:
 	void CheckPureTuning();
 	void SendTuningParams(int ClientId, int Zone = 0);
 	void SendTileCursorUpdate(int ClientId, bool Active, int X, int Y);
+	void SendEditorSpecCursorUpdate(int ClientId, bool Active, int CursorX, int CursorY);
 
 	const CVoteOptionServer *GetVoteOption(int Index) const;
 	void ProgressVoteOptions(int ClientId);
@@ -334,6 +335,11 @@ public:
 
 	void UpdatePlayerMaps();
 	bool ApplyTileModification(int Layer, int X, int Y, int Index, int Flags);
+	bool ApplyTileRectangleFill(int Layer, int X, int Y, int Width, int Height, int Index, int Flags);
+	bool ApplyTilePattern(int Layer, int X, int Y, int Width, int Height, const unsigned char *pTileBytes, size_t ByteCount, bool Destructive);
+	bool ApplyTeleTilePattern(int X, int Y, int Width, int Height, const unsigned char *pTileBytes, size_t ByteCount, bool Destructive);
+	bool ApplyTeleTileModification(int X, int Y, int Index, int Flags, int Number);
+	bool IsTileRectInsideLayer(int Layer, int X, int Y, int Width, int Height) const;
 	void TestLiveTileModification();
 
 	void *PreProcessMsg(int *pMsgId, CUnpacker *pUnpacker, int ClientId);
@@ -348,6 +354,9 @@ public:
 	void OnShowOthersNetMessage(const CNetMsg_Cl_ShowOthers *pMsg, int ClientId);
 	void OnShowDistanceNetMessage(const CNetMsg_Cl_ShowDistance *pMsg, int ClientId);
 	void OnSetTileCursorNetMessage(const CNetMsg_Cl_SetTileCursor *pMsg, int ClientId);
+	void OnSetEditorSpecStateNetMessage(const CNetMsg_Cl_SetEditorSpecState *pMsg, int ClientId);
+	void OnRequestTileAreaNetMessage(const CNetMsg_Cl_RequestTileArea *pMsg, int ClientId);
+	void OnRequestTeleTileAreaNetMessage(const CNetMsg_Cl_RequestTeleTileArea *pMsg, int ClientId);
 	void OnCameraInfoNetMessage(const CNetMsg_Cl_CameraInfo *pMsg, int ClientId);
 	void OnSetSpectatorModeNetMessage(const CNetMsg_Cl_SetSpectatorMode *pMsg, int ClientId);
 	void OnChangeInfoNetMessage(const CNetMsg_Cl_ChangeInfo *pMsg, int ClientId);

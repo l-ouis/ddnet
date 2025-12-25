@@ -38,6 +38,7 @@
 #include "components/countryflags.h"
 #include "components/damageind.h"
 #include "components/debughud.h"
+#include "components/editorspec.h"
 #include "components/effects.h"
 #include "components/emoticon.h"
 #include "components/flow.h"
@@ -170,6 +171,7 @@ public:
 	CTouchControls m_TouchControls;
 	CVoting m_Voting;
 	CSpectator m_Spectator;
+	CEditorSpec m_EditorSpec;
 
 	CPlayers m_Players;
 	CNamePlates m_NamePlates;
@@ -250,6 +252,8 @@ private:
 	static void ConRequestTileChange(IConsole::IResult *pResult, void *pUserData);
 
 	static void ConchainLanguageUpdate(IConsole::IResult *pResult, void *pUserData, IConsole::FCommandCallback pfnCallback, void *pCallbackUserData);
+	static void ConTileToolFillRect(IConsole::IResult *pResult, void *pUserData);
+	static void ConTileToolPastePattern(IConsole::IResult *pResult, void *pUserData);
 	static void ConchainSpecialInfoupdate(IConsole::IResult *pResult, void *pUserData, IConsole::FCommandCallback pfnCallback, void *pCallbackUserData);
 	static void ConchainSpecialDummyInfoupdate(IConsole::IResult *pResult, void *pUserData, IConsole::FCommandCallback pfnCallback, void *pCallbackUserData);
 	static void ConchainRefreshSkins(IConsole::IResult *pResult, void *pUserData, IConsole::FCommandCallback pfnCallback, void *pCallbackUserData);
@@ -317,6 +321,13 @@ public:
 		int m_Flags = 0;
 	};
 
+	struct STeleTileToolLayer
+	{
+		int m_Index = TILE_AIR;
+		int m_Flags = 0;
+		int m_Number = 0;
+	};
+
 	struct STileToolDragState
 	{
 		bool m_Active = false;
@@ -351,6 +362,10 @@ public:
 	void ResetTileToolDragState(STileToolDragState &State);
 	void SendTileToolRequest(const ivec2 &TilePos, STileToolDragState &State, ETileToolAction Action);
 	void SendTileToolLine(const ivec2 &From, const ivec2 &To, STileToolDragState &State, ETileToolAction Action);
+	bool SendTileToolAreaRequest(int Layer, const ivec2 &TopLeft, int Width, int Height, ETileToolAreaMode Mode, int Index, int Flags, const char *pPatternBase64, bool Destructive = true);
+	bool SendTileToolAreaFillRequest(int Layer, const ivec2 &TopLeft, int Width, int Height, const STileToolLayer &LayerData);
+	bool SendTileToolPatternRequest(int Layer, const ivec2 &TopLeft, int Width, int Height, const STileToolLayer *pTiles, int TileCount, bool Destructive = true);
+	bool SendTileToolTelePatternRequest(const ivec2 &TopLeft, int Width, int Height, const STeleTileToolLayer *pTiles, int TileCount, bool Destructive = true);
 	bool ClampTileToolTarget(const vec2 &WorldTargetPos, ivec2 &OutTile) const;
 	bool GetTileToolCursorTile(ivec2 &OutTile) const;
 	void RenderTileToolTargetIndicator();
@@ -361,6 +376,10 @@ public:
 	STileToolLayer TileToolLayerForEntry(int EntryIndex, bool FrontLayer) const;
 	int TileToolTileHash(const ivec2 &TilePos) const;
 	void UpdateTileCursorNetworkState(bool Active, const ivec2 &Tile, int Dummy);
+	bool SendEditorSpecState(bool Active, const vec2 &CursorWorld, int Dummy = -1);
+	void SetEditorSpecActive(bool Active, int Dummy = -1);
+	bool EditorSpecActive(int Dummy = -1) const;
+	int ClientIdForDummy(int Dummy) const;
 
 	int NetobjNumCorrections()
 	{
@@ -381,6 +400,10 @@ public:
 	bool m_aTileToolCursorActive[NUM_DUMMIES] = {};
 	ivec2 m_aTileToolLastCursorSent[NUM_DUMMIES] = {};
 	int m_aTileToolSelectedPaletteIndex[NUM_DUMMIES] = {};
+	bool m_aEditorSpecActive[NUM_DUMMIES] = {};
+	bool m_aEditorSpecLockPosValid[NUM_DUMMIES] = {};
+	vec2 m_aEditorSpecLockPos[NUM_DUMMIES] = {};
+	int NormalizeEditorSpecDummy(int Dummy) const;
 
 	enum
 	{
@@ -540,6 +563,8 @@ public:
 		bool m_LiveFrozen;
 		bool m_TileCursorActive;
 		ivec2 m_TileCursor;
+		bool m_EditorSpecCursorActive;
+		vec2 m_EditorSpecCursor;
 
 		CCharacterCore m_Predicted;
 		CCharacterCore m_PrevPredicted;

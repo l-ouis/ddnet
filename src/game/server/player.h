@@ -175,6 +175,11 @@ public:
 	int ForcePause(int Time);
 	int IsPaused() const;
 	bool CanSpec() const;
+	void SetEditorSpecState(bool Active, const vec2 &Cursor);
+	void UpdateEditorSpecHoverPos(const vec2 &Pos) { m_EditorSpecHoverPos = Pos; }
+	bool IsEditorSpecActive() const { return m_EditorSpecActive; }
+	const vec2 &EditorSpecHoverPos() const { return m_EditorSpecHoverPos; }
+	const vec2 &EditorSpecCursor() const { return m_EditorSpecCursor; }
 
 	bool IsPlaying() const;
 	int64_t m_LastKickVote;
@@ -187,6 +192,9 @@ public:
 	ivec2 m_TileCursor;
 	bool m_SpecTeam;
 	bool m_NinjaJetpack;
+	bool m_EditorSpecActive;
+	vec2 m_EditorSpecHoverPos;
+	vec2 m_EditorSpecCursor;
 
 	// camera info is used sparingly for converting aim target to absolute world coordinates
 	class CCameraInfo

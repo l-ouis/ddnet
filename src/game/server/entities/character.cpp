@@ -810,6 +810,21 @@ void CCharacter::PreTick()
 
 void CCharacter::Tick()
 {
+	if(m_pPlayer->IsEditorSpecActive())
+	{
+		vec2 LockPos = m_pPlayer->EditorSpecHoverPos();
+		if(distance(LockPos, m_Core.m_Pos) > 0.01f)
+		{
+			m_Core.m_Pos = LockPos;
+		}
+		m_Core.m_Vel = vec2(0.0f, 0.0f);
+		m_Pos = m_Core.m_Pos;
+		m_PrevPos = m_Pos;
+		ResetHook();
+		m_pPlayer->UpdateEditorSpecHoverPos(m_Pos);
+		return;
+	}
+
 	if(g_Config.m_SvNoWeakHook)
 	{
 		if(m_Paused)

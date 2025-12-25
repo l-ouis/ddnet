@@ -593,6 +593,9 @@ void CHud::RenderTeambalanceWarning()
 
 void CHud::RenderCursor()
 {
+	if(GameClient()->EditorSpecActive())
+		return;
+
 	int CurWeapon = 0;
 	vec2 TargetPos;
 	float Alpha = 1.0f;

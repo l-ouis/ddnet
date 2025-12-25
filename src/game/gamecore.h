@@ -107,6 +107,14 @@ inline T SaturatedAdd(T Min, T Max, T Current, T Modifier)
 
 float VelocityRamp(float Value, float Start, float Range, float Curvature);
 
+constexpr int MAX_TILE_AREA_ITEMS = 4096;
+
+enum class ETileToolAreaMode
+{
+	Fill = 0,
+	Pattern = 1,
+};
+
 // hooking stuff
 enum
 {
