@@ -319,7 +319,8 @@ void CCamera::OnRender()
 	}
 
 	// update camera center
-	if(GameClient()->m_Snap.m_SpecInfo.m_Active && !GameClient()->m_Snap.m_SpecInfo.m_UsePosition)
+	const bool EditorSpec = GameClient()->EditorSpecActive();
+	if((GameClient()->m_Snap.m_SpecInfo.m_Active && !GameClient()->m_Snap.m_SpecInfo.m_UsePosition) || EditorSpec)
 	{
 		if(m_CamType != CAMTYPE_SPEC)
 		{

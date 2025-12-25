@@ -2503,6 +2503,8 @@ if(CLIENT)
     components/sounds.h
     components/spectator.cpp
     components/spectator.h
+    components/editorspec.cpp
+    components/editorspec.h
     components/statboard.cpp
     components/statboard.h
     components/tooltips.cpp
