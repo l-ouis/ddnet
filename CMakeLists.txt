@@ -2368,6 +2368,8 @@ if(CLIENT)
     components/damageind.h
     components/debughud.cpp
     components/debughud.h
+    components/editorspec.cpp
+    components/editorspec.h
     components/effects.cpp
     components/effects.h
     components/emoticon.cpp
@@ -2434,8 +2436,6 @@ if(CLIENT)
     components/sounds.h
     components/spectator.cpp
     components/spectator.h
-    components/editorspec.cpp
-    components/editorspec.h
     components/statboard.cpp
     components/statboard.h
     components/tooltips.cpp
