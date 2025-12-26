@@ -213,6 +213,19 @@ public:
 	// keep last input to always apply when none is sent
 	CNetObj_PlayerInput m_aLastPlayerInput[MAX_CLIENTS];
 	bool m_aPlayerHasInput[MAX_CLIENTS];
+
+	struct SEditorSpecServerDrawSegment
+	{
+		int m_StartX;
+		int m_StartY;
+		int m_EndX;
+		int m_EndY;
+		int m_ColorR;
+		int m_ColorG;
+		int m_ColorB;
+	};
+	std::vector<SEditorSpecServerDrawSegment> m_aPendingEditorSpecDrawSegments[MAX_CLIENTS];
+	int m_aEditorSpecNextDrawBroadcastTick[MAX_CLIENTS];
 	CSaveTeam *m_apSavedTeams[MAX_CLIENTS];
 	CSaveHotReloadTee *m_apSavedTees[MAX_CLIENTS];
 	int m_aTeamMapping[MAX_CLIENTS];
@@ -355,6 +368,9 @@ public:
 	void OnShowDistanceNetMessage(const CNetMsg_Cl_ShowDistance *pMsg, int ClientId);
 	void OnSetTileCursorNetMessage(const CNetMsg_Cl_SetTileCursor *pMsg, int ClientId);
 	void OnSetEditorSpecStateNetMessage(const CNetMsg_Cl_SetEditorSpecState *pMsg, int ClientId);
+	void OnEditorSpecDrawSegmentNetMessage(const CNetMsg_Cl_EditorSpecDrawSegment *pMsg, int ClientId);
+	void OnEditorSpecDrawTextNetMessage(const CNetMsg_Cl_EditorSpecDrawText *pMsg, int ClientId);
+	void BroadcastEditorSpecDrawSegments(int ClientId, std::vector<SEditorSpecServerDrawSegment> &Segments);
 	void OnRequestTileAreaNetMessage(const CNetMsg_Cl_RequestTileArea *pMsg, int ClientId);
 	void OnRequestTeleTileAreaNetMessage(const CNetMsg_Cl_RequestTeleTileArea *pMsg, int ClientId);
 	void OnCameraInfoNetMessage(const CNetMsg_Cl_CameraInfo *pMsg, int ClientId);

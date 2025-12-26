@@ -1466,6 +1466,16 @@ void CGameClient::OnMessage(int MsgId, CUnpacker *pUnpacker, int Conn, bool Dumm
 			}
 		}
 	}
+	else if(MsgId == NETMSGTYPE_SV_EDITORSPECDRAWTEXT)
+	{
+		const auto *pMsg = static_cast<CNetMsg_Sv_EditorSpecDrawText *>(pRawMsg);
+		m_EditorSpec.OnRemoteDrawText(pMsg);
+	}
+	else if(MsgId == NETMSGTYPE_SV_EDITORSPECDRAWSEGMENTS)
+	{
+		const auto *pMsg = static_cast<CNetMsg_Sv_EditorSpecDrawSegments *>(pRawMsg);
+		m_EditorSpec.OnRemoteDrawSegments(pMsg);
+	}
 	else if(MsgId == NETMSGTYPE_SV_PREINPUT)
 	{
 		CNetMsg_Sv_PreInput *pMsg = (CNetMsg_Sv_PreInput *)pRawMsg;
@@ -5341,6 +5351,87 @@ bool CGameClient::SendEditorSpecState(bool Active, const vec2 &CursorWorld, int 
 		if(Client()->SendPackMsg(Conn, &Msg, MSGFLAG_VITAL))
 		{
 			Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "client", "Failed to send editorspec update");
+			return false;
+		}
+	}
+	return true;
+}
+
+bool CGameClient::SendEditorSpecDrawSegment(const vec2 &Start, const vec2 &End, const ColorRGBA &Color, int Dummy)
+{
+	CNetMsg_Cl_EditorSpecDrawSegment Msg;
+	Msg.m_StartX = round_to_int(Start.x);
+	Msg.m_StartY = round_to_int(Start.y);
+	Msg.m_EndX = round_to_int(End.x);
+	Msg.m_EndY = round_to_int(End.y);
+	const auto ToChannel = [](float Component) {
+		const int Value = round_to_int(Component * 255.0f);
+		return std::clamp(Value, 0, 255);
+	};
+	Msg.m_ColorR = ToChannel(Color.r);
+	Msg.m_ColorG = ToChannel(Color.g);
+	Msg.m_ColorB = ToChannel(Color.b);
+	if(Dummy < 0)
+	{
+		if(Client()->SendPackMsgActive(&Msg, MSGFLAG_VITAL))
+		{
+			Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "client", "Failed to send editorspec draw segment");
+			return false;
+		}
+	}
+	else
+	{
+		const int NormalizedDummy = NormalizeEditorSpecDummy(Dummy);
+		if(NormalizedDummy < 0)
+		{
+			return true;
+		}
+		const int Conn = NormalizedDummy ? IClient::CONN_DUMMY : IClient::CONN_MAIN;
+		if(Client()->SendPackMsg(Conn, &Msg, MSGFLAG_VITAL))
+		{
+			Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "client", "Failed to send editorspec draw segment");
+			return false;
+		}
+	}
+	return true;
+}
+
+bool CGameClient::SendEditorSpecDrawText(const vec2 &Pos, const char *pText, const ColorRGBA &Color, int Dummy)
+{
+	if(!pText || !pText[0])
+	{
+		return false;
+	}
+	CNetMsg_Cl_EditorSpecDrawText Msg;
+	Msg.m_PosX = round_to_int(Pos.x);
+	Msg.m_PosY = round_to_int(Pos.y);
+	const auto ToChannel = [](float Component) {
+		const int Value = round_to_int(Component * 255.0f);
+		return std::clamp(Value, 0, 255);
+	};
+	Msg.m_ColorR = ToChannel(Color.r);
+	Msg.m_ColorG = ToChannel(Color.g);
+	Msg.m_ColorB = ToChannel(Color.b);
+	Msg.m_pText = pText;
+	if(Dummy < 0)
+	{
+		if(Client()->SendPackMsgActive(&Msg, MSGFLAG_VITAL))
+		{
+			Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "client", "Failed to send editorspec draw text");
+			return false;
+		}
+	}
+	else
+	{
+		const int NormalizedDummy = NormalizeEditorSpecDummy(Dummy);
+		if(NormalizedDummy < 0)
+		{
+			return true;
+		}
+		const int Conn = NormalizedDummy ? IClient::CONN_DUMMY : IClient::CONN_MAIN;
+		if(Client()->SendPackMsg(Conn, &Msg, MSGFLAG_VITAL))
+		{
+			Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "client", "Failed to send editorspec draw text");
 			return false;
 		}
 	}

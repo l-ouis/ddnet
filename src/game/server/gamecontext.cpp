@@ -39,6 +39,14 @@
 #include <game/version.h>
 
 #include <vector>
+#include <algorithm>
+
+namespace
+{
+constexpr size_t MAX_PENDING_EDITOR_SPEC_DRAW_SEGMENTS = 256;
+constexpr int MAX_DRAW_SEGMENTS_PER_PACKET = 32;
+constexpr size_t MAX_EDITOR_SPEC_TEXT_LENGTH = 256;
+}
 
 // Not thread-safe!
 class CClientChatLogger : public ILogger
@@ -128,6 +136,7 @@ CGameContext::CGameContext(bool Resetting) :
 	m_aDeleteTempfile[0] = 0;
 	m_TeeHistorianActive = false;
 	m_LastLiveTileTestTick = 0;
+	std::fill(std::begin(m_aEditorSpecNextDrawBroadcastTick), std::end(m_aEditorSpecNextDrawBroadcastTick), 0);
 }
 
 CGameContext::~CGameContext()
@@ -1151,6 +1160,38 @@ void CGameContext::OnTick()
 		}
 	}
 
+	for(int i = 0; i < MAX_CLIENTS; ++i)
+	{
+		CPlayer *pPlayer = m_apPlayers[i];
+		if(!pPlayer || !Server()->ClientIngame(i))
+		{
+			m_aPendingEditorSpecDrawSegments[i].clear();
+			m_aEditorSpecNextDrawBroadcastTick[i] = 0;
+			continue;
+		}
+		if(!pPlayer->IsEditorSpecActive())
+		{
+			m_aPendingEditorSpecDrawSegments[i].clear();
+			m_aEditorSpecNextDrawBroadcastTick[i] = 0;
+			continue;
+		}
+		auto &Pending = m_aPendingEditorSpecDrawSegments[i];
+		if(Pending.empty())
+		{
+			continue;
+		}
+		if(m_aEditorSpecNextDrawBroadcastTick[i] <= 0)
+		{
+			m_aEditorSpecNextDrawBroadcastTick[i] = Server()->Tick() + Server()->TickSpeed();
+		}
+		if(Server()->Tick() < m_aEditorSpecNextDrawBroadcastTick[i])
+		{
+			continue;
+		}
+		BroadcastEditorSpecDrawSegments(i, Pending);
+		m_aEditorSpecNextDrawBroadcastTick[i] = Server()->Tick() + Server()->TickSpeed();
+	}
+
 	// update voting
 	if(m_VoteCloseTime)
 	{
@@ -1862,6 +1903,8 @@ void CGameContext::OnClientDrop(int ClientId, const char *pReason)
 			const vec2 &Cursor = m_apPlayers[ClientId]->EditorSpecCursor();
 			SendEditorSpecCursorUpdate(ClientId, false, round_to_int(Cursor.x), round_to_int(Cursor.y));
 		}
+		m_aPendingEditorSpecDrawSegments[ClientId].clear();
+		m_aEditorSpecNextDrawBroadcastTick[ClientId] = 0;
 	}
 	delete m_apPlayers[ClientId];
 	m_apPlayers[ClientId] = nullptr;
@@ -2233,6 +2276,12 @@ void CGameContext::OnMessage(int MsgId, CUnpacker *pUnpacker, int ClientId)
 			break;
 		case NETMSGTYPE_CL_SETEDITORSPECSTATE:
 			OnSetEditorSpecStateNetMessage(static_cast<CNetMsg_Cl_SetEditorSpecState *>(pRawMsg), ClientId);
+			break;
+		case NETMSGTYPE_CL_EDITORSPECDRAWSEGMENT:
+			OnEditorSpecDrawSegmentNetMessage(static_cast<CNetMsg_Cl_EditorSpecDrawSegment *>(pRawMsg), ClientId);
+			break;
+		case NETMSGTYPE_CL_EDITORSPECDRAWTEXT:
+			OnEditorSpecDrawTextNetMessage(static_cast<CNetMsg_Cl_EditorSpecDrawText *>(pRawMsg), ClientId);
 			break;
 		case NETMSGTYPE_CL_CAMERAINFO:
 			OnCameraInfoNetMessage(static_cast<CNetMsg_Cl_CameraInfo *>(pRawMsg), ClientId);
@@ -2855,6 +2904,133 @@ void CGameContext::OnSetEditorSpecStateNetMessage(const CNetMsg_Cl_SetEditorSpec
 	}
 
 	pPlayer->SetEditorSpecState(pMsg->m_Active, Cursor);
+	if(!pMsg->m_Active)
+	{
+		m_aPendingEditorSpecDrawSegments[ClientId].clear();
+		m_aEditorSpecNextDrawBroadcastTick[ClientId] = 0;
+	}
+}
+
+void CGameContext::OnEditorSpecDrawSegmentNetMessage(const CNetMsg_Cl_EditorSpecDrawSegment *pMsg, int ClientId)
+{
+	if(!pMsg)
+	{
+		return;
+	}
+	CPlayer *pPlayer = m_apPlayers[ClientId];
+	if(!pPlayer || !pPlayer->IsEditorSpecActive())
+	{
+		return;
+	}
+	auto &Pending = m_aPendingEditorSpecDrawSegments[ClientId];
+	if(Pending.size() >= MAX_PENDING_EDITOR_SPEC_DRAW_SEGMENTS)
+	{
+		return;
+	}
+	SEditorSpecServerDrawSegment Segment;
+	Segment.m_StartX = pMsg->m_StartX;
+	Segment.m_StartY = pMsg->m_StartY;
+	Segment.m_EndX = pMsg->m_EndX;
+	Segment.m_EndY = pMsg->m_EndY;
+	Segment.m_ColorR = std::clamp(pMsg->m_ColorR, 0, 255);
+	Segment.m_ColorG = std::clamp(pMsg->m_ColorG, 0, 255);
+	Segment.m_ColorB = std::clamp(pMsg->m_ColorB, 0, 255);
+	Pending.push_back(Segment);
+	if(m_aEditorSpecNextDrawBroadcastTick[ClientId] <= Server()->Tick())
+	{
+		m_aEditorSpecNextDrawBroadcastTick[ClientId] = Server()->Tick() + Server()->TickSpeed();
+	}
+}
+
+void CGameContext::OnEditorSpecDrawTextNetMessage(const CNetMsg_Cl_EditorSpecDrawText *pMsg, int ClientId)
+{
+	if(!pMsg)
+	{
+		return;
+	}
+	CPlayer *pPlayer = m_apPlayers[ClientId];
+	if(!pPlayer || !pPlayer->IsEditorSpecActive())
+	{
+		return;
+	}
+	if(!pMsg->m_pText || pMsg->m_pText[0] == '\0')
+	{
+		return;
+	}
+	char aText[MAX_EDITOR_SPEC_TEXT_LENGTH + 1];
+	str_copy(aText, pMsg->m_pText, sizeof(aText));
+	int Len = str_length(aText);
+	while(Len > 0 && (aText[Len - 1] == ' ' || aText[Len - 1] == '\r' || aText[Len - 1] == '\n'))
+	{
+		aText[Len - 1] = '\0';
+		--Len;
+	}
+	if(aText[0] == '\0')
+	{
+		return;
+	}
+	CNetMsg_Sv_EditorSpecDrawText Msg;
+	Msg.m_ClientId = ClientId;
+	Msg.m_PosX = pMsg->m_PosX;
+	Msg.m_PosY = pMsg->m_PosY;
+	Msg.m_ColorR = std::clamp(pMsg->m_ColorR, 0, 255);
+	Msg.m_ColorG = std::clamp(pMsg->m_ColorG, 0, 255);
+	Msg.m_ColorB = std::clamp(pMsg->m_ColorB, 0, 255);
+	Msg.m_pPlayerName = Server()->ClientName(ClientId);
+	Msg.m_pText = aText;
+	for(int Target = 0; Target < MAX_CLIENTS; ++Target)
+	{
+		if(Target == ClientId || !Server()->ClientIngame(Target))
+		{
+			continue;
+		}
+		Server()->SendPackMsg(&Msg, MSGFLAG_VITAL | MSGFLAG_NORECORD, Target);
+	}
+}
+
+void CGameContext::BroadcastEditorSpecDrawSegments(int ClientId, std::vector<SEditorSpecServerDrawSegment> &Segments)
+{
+	if(Segments.empty())
+	{
+		return;
+	}
+	while(!Segments.empty())
+	{
+		const int Batch = std::min<int>((int)Segments.size(), MAX_DRAW_SEGMENTS_PER_PACKET);
+		CNetMsg_Sv_EditorSpecDrawSegments Msg;
+		Msg.m_ClientId = ClientId;
+		Msg.m_Count = Batch;
+		for(int i = 0; i < Batch; ++i)
+		{
+			const auto &Segment = Segments[i];
+			Msg.m_aStartX[i] = Segment.m_StartX;
+			Msg.m_aStartY[i] = Segment.m_StartY;
+			Msg.m_aEndX[i] = Segment.m_EndX;
+			Msg.m_aEndY[i] = Segment.m_EndY;
+			Msg.m_aColorR[i] = Segment.m_ColorR;
+			Msg.m_aColorG[i] = Segment.m_ColorG;
+			Msg.m_aColorB[i] = Segment.m_ColorB;
+		}
+		for(int i = Batch; i < MAX_DRAW_SEGMENTS_PER_PACKET; ++i)
+		{
+			Msg.m_aStartX[i] = 0;
+			Msg.m_aStartY[i] = 0;
+			Msg.m_aEndX[i] = 0;
+			Msg.m_aEndY[i] = 0;
+			Msg.m_aColorR[i] = 0;
+			Msg.m_aColorG[i] = 0;
+			Msg.m_aColorB[i] = 0;
+		}
+		for(int Target = 0; Target < MAX_CLIENTS; ++Target)
+		{
+			if(Target == ClientId || !Server()->ClientIngame(Target))
+			{
+				continue;
+			}
+			Server()->SendPackMsg(&Msg, MSGFLAG_VITAL | MSGFLAG_NORECORD, Target);
+		}
+		Segments.erase(Segments.begin(), Segments.begin() + Batch);
+	}
 }
 
 void CGameContext::OnRequestTileAreaNetMessage(const CNetMsg_Cl_RequestTileArea *pMsg, int ClientId)

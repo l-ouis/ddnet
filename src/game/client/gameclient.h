@@ -377,6 +377,8 @@ public:
 	int TileToolTileHash(const ivec2 &TilePos) const;
 	void UpdateTileCursorNetworkState(bool Active, const ivec2 &Tile, int Dummy);
 	bool SendEditorSpecState(bool Active, const vec2 &CursorWorld, int Dummy = -1);
+	bool SendEditorSpecDrawSegment(const vec2 &Start, const vec2 &End, const ColorRGBA &Color, int Dummy = -1);
+	bool SendEditorSpecDrawText(const vec2 &Pos, const char *pText, const ColorRGBA &Color, int Dummy = -1);
 	void SetEditorSpecActive(bool Active, int Dummy = -1);
 	bool EditorSpecActive(int Dummy = -1) const;
 	int ClientIdForDummy(int Dummy) const;

@@ -593,6 +593,25 @@ Messages = [
 		NetIntAny("m_CursorY"),
 	]),
 
+	NetMessageEx("Cl_EditorSpecDrawSegment", "editor-spec-draw-segment@netmsg.ddnet.org", [
+		NetIntAny("m_StartX"),
+		NetIntAny("m_StartY"),
+		NetIntAny("m_EndX"),
+		NetIntAny("m_EndY"),
+		NetIntRange("m_ColorR", 0, 255),
+		NetIntRange("m_ColorG", 0, 255),
+		NetIntRange("m_ColorB", 0, 255),
+	]),
+
+	NetMessageEx("Cl_EditorSpecDrawText", "editor-spec-draw-text@netmsg.ddnet.org", [
+		NetIntAny("m_PosX"),
+		NetIntAny("m_PosY"),
+		NetIntRange("m_ColorR", 0, 255),
+		NetIntRange("m_ColorG", 0, 255),
+		NetIntRange("m_ColorB", 0, 255),
+		NetStringStrict("m_pText"),
+	]),
+
 	NetMessageEx("Cl_ShowOthers", "showothers@netmsg.ddnet.tw", [
 		NetIntRange("m_Show", 0, 2),
 	]),
@@ -685,6 +704,29 @@ Messages = [
 		NetBool("m_Active"),
 		NetIntAny("m_CursorX"),
 		NetIntAny("m_CursorY"),
+	]),
+
+	NetMessageEx("Sv_EditorSpecDrawText", "editor-spec-draw-text-broadcast@netmsg.ddnet.org", [
+		NetIntRange("m_ClientId", 0, 'MAX_CLIENTS-1'),
+		NetIntAny("m_PosX"),
+		NetIntAny("m_PosY"),
+		NetIntRange("m_ColorR", 0, 255),
+		NetIntRange("m_ColorG", 0, 255),
+		NetIntRange("m_ColorB", 0, 255),
+		NetStringStrict("m_pPlayerName"),
+		NetStringStrict("m_pText"),
+	]),
+
+	NetMessageEx("Sv_EditorSpecDrawSegments", "editor-spec-draw-segments@netmsg.ddnet.org", [
+		NetIntRange("m_ClientId", 0, 'MAX_CLIENTS-1'),
+		NetIntRange("m_Count", 0, 32),
+		NetArray(NetIntAny("m_aStartX", default=0), 32),
+		NetArray(NetIntAny("m_aStartY", default=0), 32),
+		NetArray(NetIntAny("m_aEndX", default=0), 32),
+		NetArray(NetIntAny("m_aEndY", default=0), 32),
+		NetArray(NetIntRange("m_aColorR", 0, 255, default=0), 32),
+		NetArray(NetIntRange("m_aColorG", 0, 255, default=0), 32),
+		NetArray(NetIntRange("m_aColorB", 0, 255, default=0), 32),
 	]),
 
 	NetMessageEx("Sv_PreInput", "preinput@netmsg.ddnet.org", [

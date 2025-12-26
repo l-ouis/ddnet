@@ -1,6 +1,7 @@
 /* (c) DDNet contributors. See licence.txt in the root of the distribution for more information. */
 #include "editorspec.h"
 
+#include <base/color.h>
 #include <base/math.h>
 #include <base/system.h>
 
@@ -22,11 +23,12 @@
 #include <game/map/render_map.h>
 
 #include <algorithm>
+#include <cmath>
 #include <string>
 
 namespace
 {
-constexpr float TOOL_PALETTE_WIDTH = 470.0f;
+constexpr float TOOL_PALETTE_WIDTH = 720.0f;
 constexpr float TOOL_PALETTE_HEIGHT = 54.0f;
 constexpr float TOOL_PALETTE_ROUNDING = 10.0f;
 constexpr float TOOL_PALETTE_HANDLE_SIZE = TOOL_PALETTE_HEIGHT;
@@ -34,13 +36,16 @@ constexpr float TOOL_PALETTE_PADDING = 12.0f;
 constexpr float TOOL_BUTTON_WIDTH = 120.0f;
 constexpr float TOOL_BUTTON_HEIGHT = 38.0f;
 constexpr float TOOL_BUTTON_ROUNDING = 8.0f;
+constexpr float TOOL_BUTTON_GAP = 14.0f;
 constexpr float TOOL_TOGGLE_WIDTH = 104.0f;
 constexpr float TOOL_TOGGLE_HEIGHT = 32.0f;
+constexpr float TOOL_TOGGLE_GAP = 10.0f;
 constexpr float LAYER_DROPDOWN_WIDTH = 110.0f;
 constexpr float LAYER_DROPDOWN_HEIGHT = 32.0f;
 constexpr float LAYER_DROPDOWN_OPTION_SPACING = 6.0f;
 constexpr float LAYER_DROPDOWN_ROUNDING = 8.0f;
 constexpr int PRIMARY_TOOL_PAINTBRUSH = 0;
+constexpr int PRIMARY_TOOL_DRAW = 1;
 constexpr float TELE_MENU_VERTICAL_GAP = 8.0f;
 constexpr float TELE_MENU_HEIGHT = 46.0f;
 constexpr float TELE_MENU_ROUNDING = 8.0f;
@@ -55,7 +60,15 @@ constexpr float TELE_MENU_WIDTH = TELE_MENU_CONTENT_WIDTH + TELE_MENU_PADDING * 
 constexpr float TELE_INPUT_TEXT_PADDING = 9.0f;
 constexpr float TELE_INPUT_HASH_GAP = 6.0f;
 constexpr int TELE_NUMBER_MIN = 1;
-constexpr int TELE_NUMBER_MAX = 999;
+constexpr int TELE_NUMBER_MAX = 256;
+constexpr int DRAW_SAMPLE_TICK_STEP = 2;
+constexpr int DRAW_SEGMENT_LIFETIME_SECONDS = 60;
+constexpr size_t MAX_STORED_DRAW_SEGMENTS = 1024;
+constexpr int MAX_DRAW_SEGMENTS_PER_PACKET = 32;
+constexpr size_t MAX_STORED_DRAW_TEXTS = 512;
+constexpr size_t MAX_DRAW_TEXT_LENGTH = 256;
+const ColorRGBA DRAW_DEFAULT_COLOR(0.3f, 0.1f, 0.1f, 1.0f);
+constexpr float DRAW_LINE_HALF_WIDTH = 2.0f;
 
 bool PointInRect(const vec2 &Point, const vec2 &TopLeft, const vec2 &Size)
 {
@@ -84,11 +97,30 @@ vec2 ToolPalettePrimaryButtonSize()
 	return vec2(TOOL_BUTTON_WIDTH, TOOL_BUTTON_HEIGHT);
 }
 
-vec2 ToolPaletteDestructiveButtonPos(const vec2 &PalettePos)
+vec2 ToolPaletteSecondaryButtonPos(const vec2 &PalettePos)
+{
+	vec2 Pos = ToolPalettePrimaryButtonPos(PalettePos);
+	Pos.x += TOOL_BUTTON_WIDTH + TOOL_BUTTON_GAP;
+	return Pos;
+}
+
+vec2 ToolPaletteShowDiffButtonPos(const vec2 &PalettePos)
 {
 	const float ButtonY = PalettePos.y + (TOOL_PALETTE_HEIGHT - TOOL_TOGGLE_HEIGHT) * 0.5f;
 	const float ButtonX = PalettePos.x + TOOL_PALETTE_WIDTH - TOOL_PALETTE_PADDING - TOOL_TOGGLE_WIDTH;
 	return vec2(ButtonX, ButtonY);
+}
+
+vec2 ToolPaletteShowDiffButtonSize()
+{
+	return vec2(TOOL_TOGGLE_WIDTH, TOOL_TOGGLE_HEIGHT);
+}
+
+vec2 ToolPaletteDestructiveButtonPos(const vec2 &PalettePos)
+{
+	vec2 Pos = ToolPaletteShowDiffButtonPos(PalettePos);
+	Pos.x -= TOOL_TOGGLE_WIDTH + TOOL_TOGGLE_GAP;
+	return Pos;
 }
 
 vec2 ToolPaletteDestructiveButtonSize()
@@ -104,7 +136,8 @@ vec2 ToolPaletteSize()
 vec2 ToolPaletteLayerDropdownPos(const vec2 &PalettePos)
 {
 	const float DropdownY = PalettePos.y + (TOOL_PALETTE_HEIGHT - LAYER_DROPDOWN_HEIGHT) * 0.5f;
-	const float RightOffset = TOOL_PALETTE_PADDING + TOOL_TOGGLE_WIDTH + TOOL_PALETTE_PADDING;
+	const float ToggleClusterWidth = TOOL_TOGGLE_WIDTH * 2.0f + TOOL_TOGGLE_GAP;
+	const float RightOffset = TOOL_PALETTE_PADDING + ToggleClusterWidth + TOOL_PALETTE_PADDING;
 	const float DropdownX = PalettePos.x + TOOL_PALETTE_WIDTH - RightOffset - LAYER_DROPDOWN_WIDTH;
 	return vec2(DropdownX, DropdownY);
 }
@@ -237,6 +270,25 @@ CTeleTile *TeleLayerData(IMap *pMap, const CMapItemLayerTilemap *pTilemap)
 	}
 
 	return static_cast<CTeleTile *>(pMap->GetData(pTilemap->m_Tele));
+}
+
+template<typename SampleType, typename TransformFunc>
+void RemapBrushSamples(const std::vector<SampleType> &Source, std::vector<SampleType> &Destination, int OldWidth, int OldHeight, int NewWidth, int NewHeight, const TransformFunc &MapFunc)
+{
+	for(int y = 0; y < OldHeight; ++y)
+	{
+		for(int x = 0; x < OldWidth; ++x)
+		{
+			const ivec2 NewPos = MapFunc(x, y, OldWidth, OldHeight);
+			if(NewPos.x < 0 || NewPos.x >= NewWidth || NewPos.y < 0 || NewPos.y >= NewHeight)
+			{
+				continue;
+			}
+			const int OldIndex = y * OldWidth + x;
+			const int NewIndex = NewPos.y * NewWidth + NewPos.x;
+			Destination[NewIndex] = Source[OldIndex];
+		}
+	}
 }
 }
 
@@ -411,6 +463,19 @@ bool CEditorSpec::BrushLayerHasContent(const SBrushLayer &Layer) const
 	return false;
 }
 
+bool CEditorSpec::TileHasContent(ELayerGroup Group, const STileSample &Tile, const STeleSample &Tele) const
+{
+	if(Tile.m_Index != TILE_AIR)
+	{
+		return true;
+	}
+	if(Group == ELayerGroup::TELE)
+	{
+		return Tele.m_Number != 0 || Tele.m_Type != 0;
+	}
+	return false;
+}
+
 bool CEditorSpec::CaptureBrushFromSelection(SState &State, const ivec2 &TopLeftTile, const ivec2 &Size)
 {
 	const int64_t TileCount = int64_t(Size.x) * Size.y;
@@ -420,14 +485,14 @@ bool CEditorSpec::CaptureBrushFromSelection(SState &State, const ivec2 &TopLeftT
 		return false;
 	}
 
-	bool AnyContent = false;
+	bool CapturedAnyLayer = false;
 	for(int LayerIndex = 0; LayerIndex < static_cast<int>(ELayerGroup::COUNT); ++LayerIndex)
 	{
 		SBrushLayer Layer;
 		Layer.m_Group = static_cast<ELayerGroup>(LayerIndex);
 		if(SampleLayerTiles(Layer.m_Group, TopLeftTile, Size, Layer))
 		{
-			AnyContent = AnyContent || BrushLayerHasContent(Layer);
+			CapturedAnyLayer = true;
 			State.m_Brush.m_aLayers[LayerIndex] = std::move(Layer);
 		}
 		else
@@ -437,9 +502,9 @@ bool CEditorSpec::CaptureBrushFromSelection(SState &State, const ivec2 &TopLeftT
 		}
 	}
 
-	if(!AnyContent)
+	if(!CapturedAnyLayer)
 	{
-		GameClient()->Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "editorspec", "Selected brush is empty");
+		GameClient()->Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "editorspec", "Failed to capture brush data");
 		return false;
 	}
 
@@ -456,6 +521,8 @@ void CEditorSpec::ClearBrush(SState &State)
 	State.m_BrushPreviewValid = false;
 	State.m_BrushPainting = false;
 	State.m_LastBrushApplyTile = ivec2(-1, -1);
+	State.m_AreaSelecting = false;
+	State.m_AreaSelectionUseBrush = false;
 }
 
 void CEditorSpec::UpdateBrushPreview(SState &State)
@@ -519,8 +586,8 @@ bool CEditorSpec::ApplyBrushAtCursor(SState &State)
 			continue;
 		}
 		const bool LayerHasContent = BrushLayerHasContent(Layer);
-		const bool ForceFrontClears = State.m_Destructive && Layer.m_Group == ELayerGroup::FRONT && !Layer.Empty();
-		if(!LayerHasContent && !ForceFrontClears)
+		const bool ForceClears = State.m_Destructive && Layer.m_Group != ELayerGroup::TELE && !Layer.Empty();
+		if(!LayerHasContent && !ForceClears)
 		{
 			continue;
 		}
@@ -562,20 +629,311 @@ bool CEditorSpec::ApplyBrushAtCursor(SState &State)
 	return AnySent;
 }
 
+bool CEditorSpec::ApplyBrushTiledSelection(SState &State, const ivec2 &TopLeftTile, const ivec2 &Size)
+{
+	if(!State.m_Brush.m_Active)
+	{
+		return false;
+	}
+	if(Size.x <= 0 || Size.y <= 0)
+	{
+		return false;
+	}
+	const int64_t TileCount64 = int64_t(Size.x) * Size.y;
+	if(TileCount64 <= 0 || TileCount64 > MAX_TILE_AREA_ITEMS)
+	{
+		GameClient()->Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "editorspec", "Selected area is too large for tiling");
+		return false;
+	}
+
+	const int SelectionWidth = Size.x;
+	const int SelectionHeight = Size.y;
+	const int SelectionTileCount = SelectionWidth * SelectionHeight;
+	bool AnySent = false;
+	for(int LayerIndex = 0; LayerIndex < static_cast<int>(ELayerGroup::COUNT); ++LayerIndex)
+	{
+		const SBrushLayer &Layer = State.m_Brush.m_aLayers[LayerIndex];
+		if(Layer.m_Width <= 0 || Layer.m_Height <= 0 || Layer.Empty())
+		{
+			continue;
+		}
+		const bool LayerHasContent = BrushLayerHasContent(Layer);
+		const bool ForceClears = State.m_Destructive && Layer.m_Group != ELayerGroup::TELE;
+		if(!LayerHasContent && !ForceClears)
+		{
+			continue;
+		}
+		const ELayerGroup Group = static_cast<ELayerGroup>(LayerIndex);
+		if(Group == ELayerGroup::TELE)
+		{
+			if(static_cast<int>(Layer.m_Tele.size()) < Layer.m_Width * Layer.m_Height)
+			{
+				continue;
+			}
+			std::vector<CGameClient::STeleTileToolLayer> Payload(SelectionTileCount);
+			for(int y = 0; y < SelectionHeight; ++y)
+			{
+				for(int x = 0; x < SelectionWidth; ++x)
+				{
+					const int BrushX = x % Layer.m_Width;
+					const int BrushY = y % Layer.m_Height;
+					const int BrushIndex = BrushY * Layer.m_Width + BrushX;
+					const int OutIndex = y * SelectionWidth + x;
+					const STileSample &Sample = Layer.m_Tiles[BrushIndex];
+					auto &Out = Payload[OutIndex];
+					Out.m_Index = Sample.m_Index;
+					Out.m_Flags = Sample.m_Flags;
+					int Number = 0;
+					if(BrushIndex < (int)Layer.m_Tele.size())
+					{
+						Number = Layer.m_Tele[BrushIndex].m_Number;
+					}
+					Out.m_Number = Number;
+				}
+			}
+			if(GameClient()->SendTileToolTelePatternRequest(TopLeftTile, SelectionWidth, SelectionHeight, Payload.data(), SelectionTileCount, State.m_Destructive))
+			{
+				AnySent = true;
+			}
+			continue;
+		}
+
+		std::vector<CGameClient::STileToolLayer> Payload(SelectionTileCount);
+		for(int y = 0; y < SelectionHeight; ++y)
+		{
+			for(int x = 0; x < SelectionWidth; ++x)
+			{
+				const int BrushX = x % Layer.m_Width;
+				const int BrushY = y % Layer.m_Height;
+				const int BrushIndex = BrushY * Layer.m_Width + BrushX;
+				const int OutIndex = y * SelectionWidth + x;
+				const STileSample &Sample = Layer.m_Tiles[BrushIndex];
+				Payload[OutIndex].m_Index = Sample.m_Index;
+				Payload[OutIndex].m_Flags = Sample.m_Flags;
+			}
+		}
+		const int EngineLayer = LayerIndexForGroup(Group);
+		if(GameClient()->SendTileToolPatternRequest(EngineLayer, TopLeftTile, SelectionWidth, SelectionHeight, Payload.data(), SelectionTileCount, State.m_Destructive))
+		{
+			AnySent = true;
+		}
+	}
+
+	return AnySent;
+}
+
+
+bool CEditorSpec::ApplyDestructiveAirSelection(SState &State, const ivec2 &TopLeftTile, const ivec2 &Size, ELayerGroup Layer)
+{
+	if(Size.x <= 0 || Size.y <= 0)
+	{
+		return false;
+	}
+	const int64_t TileCount64 = int64_t(Size.x) * Size.y;
+	if(TileCount64 <= 0 || TileCount64 > MAX_TILE_AREA_ITEMS)
+	{
+		GameClient()->Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "editorspec", "Selected area is too large to edit");
+		return false;
+	}
+
+	if(Layer == ELayerGroup::TELE)
+	{
+		const int TileCount = Size.x * Size.y;
+		std::vector<CGameClient::STeleTileToolLayer> Payload(TileCount);
+		for(auto &Cell : Payload)
+		{
+			Cell.m_Index = TILE_AIR;
+			Cell.m_Flags = 0;
+			Cell.m_Number = 0;
+		}
+		return GameClient()->SendTileToolTelePatternRequest(TopLeftTile, Size.x, Size.y, Payload.data(), TileCount, true);
+	}
+
+	// When additive mode is active on the front layer, treat shift-drag as a hookthrough fill instead of a clear.
+	const bool PlaceHookthrough = Layer == ELayerGroup::FRONT && !State.m_Destructive;
+	CGameClient::STileToolLayer FillTile;
+	FillTile.m_Index = PlaceHookthrough ? TILE_THROUGH_CUT : TILE_AIR;
+	FillTile.m_Flags = 0;
+	if(State.m_Destructive && Layer == ELayerGroup::FRONT)
+	{
+		// Force clears of hookthrough overrides by blasting both layers with air.
+		bool Success = GameClient()->SendTileToolAreaFillRequest(LAYER_FRONT, TopLeftTile, Size.x, Size.y, FillTile);
+		CGameClient::STileToolLayer GameAir;
+		GameAir.m_Index = TILE_AIR;
+		GameAir.m_Flags = 0;
+		Success = GameClient()->SendTileToolAreaFillRequest(LAYER_GAME, TopLeftTile, Size.x, Size.y, GameAir) || Success;
+		return Success;
+	}
+	const int EngineLayer = LayerIndexForGroup(Layer);
+	return GameClient()->SendTileToolAreaFillRequest(EngineLayer, TopLeftTile, Size.x, Size.y, FillTile);
+}
+
+bool CEditorSpec::RotateBrush(SState &State, bool Clockwise)
+{
+	if(!State.m_Brush.m_Active)
+	{
+		return false;
+	}
+	const int BrushWidth = State.m_Brush.m_Size.x;
+	const int BrushHeight = State.m_Brush.m_Size.y;
+	if(BrushWidth <= 0 || BrushHeight <= 0)
+	{
+		return false;
+	}
+
+	const auto MapFunc = [Clockwise](int x, int y, int OldWidth, int OldHeight) -> ivec2 {
+		if(Clockwise)
+		{
+			return ivec2(OldHeight - 1 - y, x);
+		}
+		return ivec2(y, OldWidth - 1 - x);
+	};
+
+	bool Modified = false;
+	for(auto &Layer : State.m_Brush.m_aLayers)
+	{
+		const int OldWidth = Layer.m_Width;
+		const int OldHeight = Layer.m_Height;
+		if(OldWidth <= 0 || OldHeight <= 0)
+		{
+			continue;
+		}
+		const int NewWidth = OldHeight;
+		const int NewHeight = OldWidth;
+		const size_t NewTileCount = (size_t)NewWidth * NewHeight;
+		const size_t OldTileCount = (size_t)OldWidth * OldHeight;
+		std::vector<STileSample> NewTiles(NewTileCount, STileSample());
+		if(Layer.m_Tiles.size() == OldTileCount)
+		{
+			RemapBrushSamples(Layer.m_Tiles, NewTiles, OldWidth, OldHeight, NewWidth, NewHeight, MapFunc);
+		}
+		Layer.m_Tiles = std::move(NewTiles);
+		if(!Layer.m_Tele.empty())
+		{
+			std::vector<STeleSample> NewTele(NewTileCount, STeleSample());
+			if(Layer.m_Tele.size() == OldTileCount)
+			{
+				RemapBrushSamples(Layer.m_Tele, NewTele, OldWidth, OldHeight, NewWidth, NewHeight, MapFunc);
+			}
+			Layer.m_Tele = std::move(NewTele);
+		}
+		Layer.m_Width = NewWidth;
+		Layer.m_Height = NewHeight;
+		Modified = true;
+	}
+
+	if(!Modified)
+	{
+		return false;
+	}
+
+	State.m_Brush.m_Size = ivec2(BrushHeight, BrushWidth);
+	State.m_LastBrushApplyTile = ivec2(-1, -1);
+	UpdateBrushPreview(State);
+	return true;
+}
+
+bool CEditorSpec::MirrorBrush(SState &State, bool Horizontal)
+{
+	if(!State.m_Brush.m_Active)
+	{
+		return false;
+	}
+	const int BrushWidth = State.m_Brush.m_Size.x;
+	const int BrushHeight = State.m_Brush.m_Size.y;
+	if(BrushWidth <= 0 || BrushHeight <= 0)
+	{
+		return false;
+	}
+
+	const auto MapFunc = [Horizontal](int x, int y, int OldWidth, int OldHeight) -> ivec2 {
+		if(Horizontal)
+		{
+			return ivec2(OldWidth - 1 - x, y);
+		}
+		return ivec2(x, OldHeight - 1 - y);
+	};
+
+	bool Modified = false;
+	for(auto &Layer : State.m_Brush.m_aLayers)
+	{
+		const int OldWidth = Layer.m_Width;
+		const int OldHeight = Layer.m_Height;
+		if(OldWidth <= 0 || OldHeight <= 0)
+		{
+			continue;
+		}
+		const size_t TileCount = (size_t)OldWidth * OldHeight;
+		std::vector<STileSample> NewTiles(TileCount, STileSample());
+		if(Layer.m_Tiles.size() == TileCount)
+		{
+			RemapBrushSamples(Layer.m_Tiles, NewTiles, OldWidth, OldHeight, OldWidth, OldHeight, MapFunc);
+		}
+		Layer.m_Tiles = std::move(NewTiles);
+		if(!Layer.m_Tele.empty())
+		{
+			std::vector<STeleSample> NewTele(TileCount, STeleSample());
+			if(Layer.m_Tele.size() == TileCount)
+			{
+				RemapBrushSamples(Layer.m_Tele, NewTele, OldWidth, OldHeight, OldWidth, OldHeight, MapFunc);
+			}
+			Layer.m_Tele = std::move(NewTele);
+		}
+		Modified = true;
+	}
+
+	if(!Modified)
+	{
+		return false;
+	}
+
+	State.m_LastBrushApplyTile = ivec2(-1, -1);
+	UpdateBrushPreview(State);
+	return true;
+}
+
 void CEditorSpec::RenderBrushOverlay(const SState &State) const
 {
-	if(State.m_BrushSelecting)
-	{
+	const auto RenderSelectionRect = [&](const vec2 &StartWorld, const vec2 &EndWorld, const ColorRGBA &Tint) {
 		ivec2 TopLeft;
 		ivec2 Size;
-		if(ComputeSelectionBounds(State.m_BrushSelectStartWorld, State.m_BrushSelectCurrentWorld, TopLeft, Size))
+		if(!ComputeSelectionBounds(StartWorld, EndWorld, TopLeft, Size))
 		{
-			const float WorldX = TopLeft.x * 32.0f;
-			const float WorldY = TopLeft.y * 32.0f;
-			const float Width = Size.x * 32.0f;
-			const float Height = Size.y * 32.0f;
-			Graphics()->DrawRect(WorldX, WorldY, Width, Height, ColorRGBA(0.2f, 0.6f, 1.0f, 0.25f), 0, 0.0f);
+			return;
 		}
+		const float WorldX = TopLeft.x * 32.0f;
+		const float WorldY = TopLeft.y * 32.0f;
+		const float Width = Size.x * 32.0f;
+		const float Height = Size.y * 32.0f;
+		Graphics()->DrawRect(WorldX, WorldY, Width, Height, Tint, 0, 0.0f);
+		const auto RenderBorder = [&](float X, float Y, float W, float H) {
+			const float MaxThickness = 2.0f;
+			const float Thickness = minimum(MaxThickness, minimum(W * 0.5f, H * 0.5f));
+			if(Thickness <= 0.0f)
+			{
+				return;
+			}
+			const ColorRGBA BorderColor(1.0f, 1.0f, 1.0f, 0.5f);
+			Graphics()->DrawRect(X, Y, W, Thickness, BorderColor, 0, 0.0f);
+			Graphics()->DrawRect(X, Y + H - Thickness, W, Thickness, BorderColor, 0, 0.0f);
+			const float SideHeight = maximum(H - Thickness * 2.0f, 0.0f);
+			if(SideHeight <= 0.0f)
+			{
+				return;
+			}
+			Graphics()->DrawRect(X, Y + Thickness, Thickness, SideHeight, BorderColor, 0, 0.0f);
+			Graphics()->DrawRect(X + W - Thickness, Y + Thickness, Thickness, SideHeight, BorderColor, 0, 0.0f);
+		};
+		RenderBorder(WorldX, WorldY, Width, Height);
+	};
+
+	if(State.m_BrushSelecting)
+	{
+		RenderSelectionRect(State.m_BrushSelectStartWorld, State.m_BrushSelectCurrentWorld, ColorRGBA(0.2f, 0.6f, 1.0f, 0.25f));
+	}
+	if(State.m_AreaSelecting)
+	{
+		RenderSelectionRect(State.m_AreaSelectStartWorld, State.m_AreaSelectCurrentWorld, ColorRGBA(0.95f, 0.5f, 0.1f, 0.28f));
 	}
 	if(State.m_Brush.m_Active && State.m_BrushPreviewValid)
 	{
@@ -676,6 +1034,13 @@ void CEditorSpec::DeactivateDummy(int Dummy, bool NotifyServer)
 	State.m_BrushPainting = false;
 	State.m_LastBrushApplyTile = ivec2(-1, -1);
 	State.m_Brush.Clear();
+	ClearDrawState(State);
+	State.m_ShiftHeld = false;
+	State.m_AreaSelecting = false;
+	State.m_AreaSelectionUseBrush = false;
+	State.m_AreaSelectionLayer = ELayerGroup::GAME;
+	State.m_AreaSelectStartWorld = vec2(0.0f, 0.0f);
+	State.m_AreaSelectCurrentWorld = vec2(0.0f, 0.0f);
 	if(!State.m_Active)
 		return;
 
@@ -751,6 +1116,7 @@ void CEditorSpec::Activate()
 	ResetTeleInputBuffer(State);
 	State.m_LastSentCursor = ivec2(round_to_int(State.m_CursorWorld.x), round_to_int(State.m_CursorWorld.y));
 	GameClient()->SetEditorSpecActive(true, Dummy);
+	EnsureDiffBaseline();
 
 	if(!GameClient()->SendEditorSpecState(true, State.m_CursorWorld, Dummy))
 	{
@@ -765,11 +1131,14 @@ void CEditorSpec::Deactivate()
 
 void CEditorSpec::OnReset()
 {
+	InvalidateDiffBaseline();
 	for(int Dummy = 0; Dummy < NUM_DUMMIES; ++Dummy)
 	{
 		DeactivateDummy(Dummy);
 		m_aStates[Dummy] = SState();
 	}
+	m_DrawSegments.clear();
+	m_DrawTexts.clear();
 }
 
 void CEditorSpec::OnNewSnapshot()
@@ -849,6 +1218,10 @@ bool CEditorSpec::OnCursorMove(float x, float y, IInput::ECursorType CursorType)
 	{
 		State.m_BrushSelectCurrentWorld = State.m_CursorWorld;
 	}
+	if(State.m_AreaSelecting)
+	{
+		State.m_AreaSelectCurrentWorld = State.m_CursorWorld;
+	}
 
 	if(State.m_ToolPaletteDragging)
 	{
@@ -870,6 +1243,11 @@ bool CEditorSpec::OnCursorMove(float x, float y, IInput::ECursorType CursorType)
 				State.m_LastBrushApplyTile = State.m_BrushPreviewTile;
 			}
 		}
+	}
+
+	if(State.m_DrawSampling)
+	{
+		HandleDrawSampling(State, Dummy, false);
 	}
 
 	GameClient()->m_Controls.m_aMouseInputType[Dummy] = CControls::EMouseInputType::RELATIVE;
@@ -903,6 +1281,44 @@ bool CEditorSpec::OnInput(const IInput::CEvent &Event)
 			}
 		}
 		State.m_BrushSelecting = false;
+	};
+
+	const auto CommitAreaSelection = [&]() {
+		if(!State.m_AreaSelecting)
+		{
+			return;
+		}
+		ivec2 TopLeftTile;
+		ivec2 Size;
+		if(ComputeSelectionBounds(State.m_AreaSelectStartWorld, State.m_AreaSelectCurrentWorld, TopLeftTile, Size))
+		{
+			const bool UseBrush = State.m_AreaSelectionUseBrush && State.m_Brush.m_Active;
+			if(UseBrush)
+			{
+				ApplyBrushTiledSelection(State, TopLeftTile, Size);
+			}
+			else
+			{
+				ApplyDestructiveAirSelection(State, TopLeftTile, Size, State.m_AreaSelectionLayer);
+				if(State.m_AreaSelectionLayer == ELayerGroup::GAME && State.m_Destructive)
+				{
+					ApplyDestructiveAirSelection(State, TopLeftTile, Size, ELayerGroup::FRONT);
+				}
+			}
+		}
+		State.m_AreaSelecting = false;
+		State.m_AreaSelectionUseBrush = false;
+	};
+
+	const auto BeginAreaSelection = [&]() {
+		State.m_AreaSelecting = true;
+		State.m_AreaSelectionUseBrush = State.m_Brush.m_Active;
+		State.m_AreaSelectionLayer = State.m_SelectedLayer;
+		State.m_AreaSelectStartWorld = State.m_CursorWorld;
+		State.m_AreaSelectCurrentWorld = State.m_CursorWorld;
+		State.m_BrushSelecting = false;
+		State.m_BrushPainting = false;
+		State.m_LastBrushApplyTile = ivec2(-1, -1);
 	};
 
 	if(State.m_TeleInputEditing && (Event.m_Flags & IInput::FLAG_TEXT))
@@ -948,6 +1364,86 @@ bool CEditorSpec::OnInput(const IInput::CEvent &Event)
 		return true;
 	}
 
+	if(State.m_DrawTextEditing)
+	{
+		if((Event.m_Flags & IInput::FLAG_TEXT) && Event.m_aText[0])
+		{
+			const int InputLen = str_length(Event.m_aText);
+			if(InputLen > 0)
+			{
+				std::string Filtered;
+				Filtered.reserve(InputLen);
+				for(int i = 0; i < InputLen; ++i)
+				{
+					const char c = Event.m_aText[i];
+					if(c == '\r')
+					{
+						continue;
+					}
+					Filtered.push_back(c);
+				}
+				if(!Filtered.empty())
+				{
+					const size_t Remaining = MAX_DRAW_TEXT_LENGTH - State.m_DrawTextBuffer.size();
+					if(Remaining >= Filtered.size())
+					{
+						State.m_DrawTextBuffer.append(Filtered);
+					}
+				}
+			}
+			return true;
+		}
+		if(Event.m_Key == KEY_LSHIFT || Event.m_Key == KEY_RSHIFT)
+		{
+			if(Press)
+			{
+				State.m_ShiftHeld = true;
+			}
+			else if(Release)
+			{
+				State.m_ShiftHeld = false;
+			}
+			return true;
+		}
+		if(Press)
+		{
+			if(Event.m_Key == KEY_ESCAPE)
+			{
+				CancelDrawText(State);
+				return true;
+			}
+			if(Event.m_Key == KEY_BACKSPACE || Event.m_Key == KEY_DELETE)
+			{
+				if(!State.m_DrawTextBuffer.empty())
+				{
+					State.m_DrawTextBuffer.pop_back();
+				}
+				return true;
+			}
+			if(Event.m_Key == KEY_RETURN || Event.m_Key == KEY_KP_ENTER)
+			{
+				if(State.m_ShiftHeld)
+				{
+					if(State.m_DrawTextBuffer.size() < MAX_DRAW_TEXT_LENGTH)
+					{
+						State.m_DrawTextBuffer.push_back('\n');
+					}
+				}
+				else
+				{
+					SubmitDrawText(State, Dummy);
+				}
+				return true;
+			}
+			return true;
+		}
+		if(Release)
+		{
+			return true;
+		}
+		return true;
+	}
+
 	if(!State.m_Active)
 	{
 		if(Event.m_Key == KEY_MOUSE_1 && Release)
@@ -959,6 +1455,18 @@ bool CEditorSpec::OnInput(const IInput::CEvent &Event)
 	{
 		State.m_Destructive = !State.m_Destructive;
 		return true;
+	}
+
+	if(Press)
+	{
+		if(Event.m_Key == KEY_R && RotateBrush(State, false))
+			return true;
+		if(Event.m_Key == KEY_T && RotateBrush(State, true))
+			return true;
+		if(Event.m_Key == KEY_N && MirrorBrush(State, true))
+			return true;
+		if(Event.m_Key == KEY_M && MirrorBrush(State, false))
+			return true;
 	}
 
 	if(Event.m_Key == KEY_MOUSE_3)
@@ -982,6 +1490,7 @@ bool CEditorSpec::OnInput(const IInput::CEvent &Event)
 			return false;
 		if(Press)
 		{
+			State.m_AreaSelecting = false;
 			if(State.m_CtrlHeld)
 			{
 				FinishTeleInputEditing(State);
@@ -1006,8 +1515,21 @@ bool CEditorSpec::OnInput(const IInput::CEvent &Event)
 			}
 			else
 			{
-				State.m_BrushSelecting = false;
-				ClearBrush(State);
+				if(State.m_SelectedPrimaryTool == PRIMARY_TOOL_DRAW)
+				{
+					FinishTeleInputEditing(State);
+					EndDrawStroke(State);
+					if(State.m_DrawTextEditing)
+					{
+						CancelDrawText(State);
+					}
+					BeginDrawText(State, State.m_CursorWorld);
+				}
+				else
+				{
+					State.m_BrushSelecting = false;
+					ClearBrush(State);
+				}
 			}
 		}
 		return true;
@@ -1037,8 +1559,11 @@ bool CEditorSpec::OnInput(const IInput::CEvent &Event)
 		const bool CursorInDropdownOptions = State.m_LayerDropdownOpen && PointInRect(State.m_CursorWorld, DropdownOptionsPos, DropdownOptionsSize);
 		const vec2 TogglePos = ToolPaletteDestructiveButtonPos(State.m_ToolPalettePos);
 		const vec2 ToggleSize = ToolPaletteDestructiveButtonSize();
+		const vec2 ShowDiffPos = ToolPaletteShowDiffButtonPos(State.m_ToolPalettePos);
+		const vec2 ShowDiffSize = ToolPaletteShowDiffButtonSize();
 		const bool CursorInDestructiveToggle = State.m_ToolPaletteActive && PointInRect(State.m_CursorWorld, TogglePos, ToggleSize);
-		const bool CursorOverToolPaletteUi = CursorInPaletteBody || CursorInDropdownOptions || CursorInDestructiveToggle;
+		const bool CursorInShowDiffToggle = State.m_ToolPaletteActive && PointInRect(State.m_CursorWorld, ShowDiffPos, ShowDiffSize);
+		const bool CursorOverToolPaletteUi = CursorInPaletteBody || CursorInDropdownOptions || CursorInDestructiveToggle || CursorInShowDiffToggle;
 
 		if(Press && State.m_ToolPaletteActive)
 		{
@@ -1058,12 +1583,34 @@ bool CEditorSpec::OnInput(const IInput::CEvent &Event)
 			if(PointInRect(State.m_CursorWorld, PrimaryButtonPos, PrimaryButtonSize))
 			{
 				State.m_SelectedPrimaryTool = PRIMARY_TOOL_PAINTBRUSH;
+				ClearDrawState(State);
+				Consumed = true;
+			}
+		}
+		if(!Consumed && State.m_ToolPaletteActive && Press)
+		{
+			const vec2 SecondaryButtonPos = ToolPaletteSecondaryButtonPos(State.m_ToolPalettePos);
+			const vec2 SecondaryButtonSize = ToolPalettePrimaryButtonSize();
+			if(PointInRect(State.m_CursorWorld, SecondaryButtonPos, SecondaryButtonSize))
+			{
+				State.m_SelectedPrimaryTool = PRIMARY_TOOL_DRAW;
+				ClearBrush(State);
+				ClearDrawState(State);
 				Consumed = true;
 			}
 		}
 		if(!Consumed && State.m_ToolPaletteActive && Press && CursorInDestructiveToggle)
 		{
 			State.m_Destructive = !State.m_Destructive;
+			Consumed = true;
+		}
+		if(!Consumed && State.m_ToolPaletteActive && Press && CursorInShowDiffToggle)
+		{
+			State.m_ShowDiff = !State.m_ShowDiff;
+			if(State.m_ShowDiff)
+			{
+				EnsureDiffBaseline();
+			}
 			Consumed = true;
 		}
 		if(!Consumed && State.m_ToolPaletteActive && CursorInDropdownButton && Press)
@@ -1135,13 +1682,44 @@ bool CEditorSpec::OnInput(const IInput::CEvent &Event)
 
 		if(Consumed)
 			return true;
+		if(State.m_AreaSelecting)
+		{
+			if(Release)
+			{
+				CommitAreaSelection();
+			}
+			return true;
+		}
 
 		if(!State.m_Active)
 			return State.m_CtrlHeld;
 
-		const bool PaintbrushEnabled = State.m_SelectedPrimaryTool == PRIMARY_TOOL_PAINTBRUSH && !State.m_CtrlHeld && !CursorOverToolPaletteUi;
+		const bool PaintbrushEnabled = State.m_SelectedPrimaryTool == PRIMARY_TOOL_PAINTBRUSH && !State.m_CtrlHeld && !CursorOverToolPaletteUi && !State.m_DrawTextEditing;
+		const bool DrawEnabled = State.m_SelectedPrimaryTool == PRIMARY_TOOL_DRAW && !State.m_CtrlHeld && !CursorOverToolPaletteUi && !State.m_DrawTextEditing;
+		if(DrawEnabled)
+		{
+			if(Press)
+			{
+				BeginDrawStroke(State, Dummy);
+				return true;
+			}
+			if(Release)
+			{
+				EndDrawStroke(State);
+				return true;
+			}
+			if(State.m_DrawSampling)
+			{
+				return true;
+			}
+		}
+		if(PaintbrushEnabled && State.m_ShiftHeld && Press)
+		{
+			BeginAreaSelection();
+			return true;
+		}
 
-		if(PaintbrushEnabled && State.m_Brush.m_Active)
+		if(PaintbrushEnabled && State.m_Brush.m_Active && !State.m_ShiftHeld)
 		{
 			if(Press)
 			{
@@ -1165,7 +1743,7 @@ bool CEditorSpec::OnInput(const IInput::CEvent &Event)
 			}
 		}
 
-		if(PaintbrushEnabled && !State.m_Brush.m_Active)
+		if(PaintbrushEnabled && !State.m_Brush.m_Active && !State.m_ShiftHeld)
 		{
 			if(Press)
 			{
@@ -1184,6 +1762,15 @@ bool CEditorSpec::OnInput(const IInput::CEvent &Event)
 		}
 
 		return State.m_CtrlHeld;
+	}
+
+	if(Event.m_Key == KEY_LSHIFT || Event.m_Key == KEY_RSHIFT)
+	{
+		if(Press)
+			State.m_ShiftHeld = true;
+		else if(Release)
+			State.m_ShiftHeld = false;
+		return false;
 	}
 
 	if(Event.m_Key == KEY_LCTRL || Event.m_Key == KEY_RCTRL)
@@ -1287,6 +1874,18 @@ void CEditorSpec::OnRender()
 		TextRender()->Text(IconX, IconY, IconFontSize, FontIcons::FONT_ICON_PEN_TO_SQUARE);
 		TextRender()->SetFontPreset(EFontPreset::DEFAULT_FONT);
 
+		const vec2 DrawButtonPos = ToolPaletteSecondaryButtonPos(State.m_ToolPalettePos);
+		const bool SelectedDraw = State.m_SelectedPrimaryTool == PRIMARY_TOOL_DRAW;
+		const ColorRGBA DrawButtonColor = SelectedDraw ? ColorRGBA(0.95f, 0.3f, 0.3f, 0.95f) : ColorRGBA(0.25f, 0.25f, 0.25f, 0.85f);
+		Graphics()->DrawRect(DrawButtonPos.x, DrawButtonPos.y, PrimaryButtonSize.x, PrimaryButtonSize.y, DrawButtonColor, IGraphics::CORNER_ALL, TOOL_BUTTON_ROUNDING);
+		TextRender()->TextColor(ColorRGBA(1.0f, 1.0f, 1.0f, 1.0f));
+		TextRender()->TextOutlineColor(ColorRGBA(0.0f, 0.0f, 0.0f, 0.3f));
+		const float DrawFontSize = 14.0f;
+		const float DrawTextWidth = TextRender()->TextWidth(DrawFontSize, "Draw");
+		const float DrawTextX = DrawButtonPos.x + (PrimaryButtonSize.x - DrawTextWidth) * 0.5f;
+		const float DrawTextY = DrawButtonPos.y + (PrimaryButtonSize.y - DrawFontSize) * 0.5f;
+		TextRender()->Text(DrawTextX, DrawTextY, DrawFontSize, "Draw");
+
 		const vec2 TogglePos = ToolPaletteDestructiveButtonPos(State.m_ToolPalettePos);
 		const vec2 ToggleSize = ToolPaletteDestructiveButtonSize();
 		const bool ToggleHover = PointInRect(State.m_CursorWorld, TogglePos, ToggleSize);
@@ -1306,6 +1905,23 @@ void CEditorSpec::OnRender()
 		const float ToggleFontSize = 13.0f;
 		const float ToggleTextY = TogglePos.y + (ToggleSize.y - ToggleFontSize) * 0.5f;
 		TextRender()->Text(TogglePos.x + 10.0f, ToggleTextY, ToggleFontSize, pToggleText);
+
+		const vec2 ShowDiffPos = ToolPaletteShowDiffButtonPos(State.m_ToolPalettePos);
+		const vec2 ShowDiffSize = ToolPaletteShowDiffButtonSize();
+		const bool ShowDiffHover = PointInRect(State.m_CursorWorld, ShowDiffPos, ShowDiffSize);
+		ColorRGBA ShowDiffColor;
+		if(State.m_ShowDiff)
+		{
+			ShowDiffColor = ShowDiffHover ? ColorRGBA(0.3f, 0.75f, 1.0f, 0.95f) : ColorRGBA(0.22f, 0.62f, 0.95f, 0.9f);
+		}
+		else
+		{
+			ShowDiffColor = ShowDiffHover ? ColorRGBA(0.35f, 0.35f, 0.35f, 0.9f) : ColorRGBA(0.22f, 0.22f, 0.22f, 0.85f);
+		}
+		Graphics()->DrawRect(ShowDiffPos.x, ShowDiffPos.y, ShowDiffSize.x, ShowDiffSize.y, ShowDiffColor, IGraphics::CORNER_ALL, TOOL_BUTTON_ROUNDING);
+		const float ShowDiffFontSize = 13.0f;
+		const float ShowDiffTextY = ShowDiffPos.y + (ShowDiffSize.y - ShowDiffFontSize) * 0.5f;
+		TextRender()->Text(ShowDiffPos.x + 10.0f, ShowDiffTextY, ShowDiffFontSize, "Show Diff");
 		TextRender()->TextColor(ColorRGBA(1.0f, 1.0f, 1.0f, 1.0f));
 		TextRender()->TextOutlineColor(ColorRGBA(0.0f, 0.0f, 0.0f, 0.3f));
 		const vec2 DropdownPos = ToolPaletteLayerDropdownPos(State.m_ToolPalettePos);
@@ -1438,7 +2054,17 @@ void CEditorSpec::OnRender()
 		TextRender()->TextOutlineColor(TextRender()->DefaultTextOutlineColor());
 	};
 
+	PruneExpiredDrawSegments();
+	PruneExpiredDrawTexts();
+	RenderDrawSegments();
+	if(State.m_ShowDiff)
+	{
+		EnsureDiffBaseline();
+		RenderDiffOverlay(State);
+	}
+	RenderDrawTexts();
 	RenderBrushOverlay(State);
+	RenderDrawTextPreview(State);
 
 	if(State.m_ToolPaletteActive)
 	{
@@ -1454,4 +2080,624 @@ void CEditorSpec::OnRender()
 	}
 
 	Graphics()->MapScreen(OldX0, OldY0, OldX1, OldY1);
+}
+
+void CEditorSpec::OnRemoteDrawSegments(const CNetMsg_Sv_EditorSpecDrawSegments *pMsg)
+{
+	if(!pMsg)
+	{
+		return;
+	}
+	const int Count = std::clamp(pMsg->m_Count, 0, MAX_DRAW_SEGMENTS_PER_PACKET);
+	for(int i = 0; i < Count; ++i)
+	{
+		const vec2 Start((float)pMsg->m_aStartX[i], (float)pMsg->m_aStartY[i]);
+		const vec2 End((float)pMsg->m_aEndX[i], (float)pMsg->m_aEndY[i]);
+		if(distance(Start, End) < 0.5f)
+		{
+			continue;
+		}
+		const ColorRGBA Color(
+			pMsg->m_aColorR[i] / 255.0f,
+			pMsg->m_aColorG[i] / 255.0f,
+			pMsg->m_aColorB[i] / 255.0f,
+			0.95f);
+		AddDrawSegment(Start, End, Color, pMsg->m_ClientId);
+	}
+}
+
+void CEditorSpec::OnRemoteDrawText(const CNetMsg_Sv_EditorSpecDrawText *pMsg)
+{
+	if(!pMsg)
+	{
+		return;
+	}
+	const ColorRGBA Color(
+		pMsg->m_ColorR / 255.0f,
+		pMsg->m_ColorG / 255.0f,
+		pMsg->m_ColorB / 255.0f,
+		0.95f);
+	AddDrawText(vec2(pMsg->m_PosX, pMsg->m_PosY), pMsg->m_pPlayerName, pMsg->m_pText, Color, pMsg->m_ClientId);
+}
+
+void CEditorSpec::BeginDrawStroke(SState &State, int Dummy)
+{
+	State.m_DrawSampling = true;
+	State.m_DrawHasSample = false;
+	State.m_DrawNextSampleTick = Client()->GameTick(Dummy);
+	HandleDrawSampling(State, Dummy, true);
+}
+
+void CEditorSpec::EndDrawStroke(SState &State)
+{
+	State.m_DrawSampling = false;
+	State.m_DrawHasSample = false;
+}
+
+void CEditorSpec::HandleDrawSampling(SState &State, int Dummy, bool ForceSample)
+{
+	if(!State.m_DrawSampling)
+	{
+		return;
+	}
+	const int CurrentTick = Client()->GameTick(Dummy);
+	if(!ForceSample && CurrentTick < State.m_DrawNextSampleTick)
+	{
+		return;
+	}
+	const vec2 CurrentPos = State.m_CursorWorld;
+	if(State.m_DrawHasSample)
+	{
+		const vec2 PrevPos = State.m_DrawLastSampleWorld;
+		if(distance(PrevPos, CurrentPos) > 0.5f)
+		{
+			SubmitDrawSegment(PrevPos, CurrentPos, Dummy);
+		}
+	}
+	State.m_DrawLastSampleWorld = CurrentPos;
+	State.m_DrawHasSample = true;
+	State.m_DrawNextSampleTick = CurrentTick + DRAW_SAMPLE_TICK_STEP;
+}
+
+void CEditorSpec::SubmitDrawSegment(const vec2 &Start, const vec2 &End, int Dummy)
+{
+	if(distance(Start, End) < 0.5f)
+	{
+		return;
+	}
+	const ColorRGBA Color = DrawColorForDummy(Dummy);
+	if(GameClient()->SendEditorSpecDrawSegment(Start, End, Color, Dummy))
+	{
+		const int ClientId = GameClient()->ClientIdForDummy(Dummy);
+		AddDrawSegment(Start, End, Color, ClientId);
+	}
+}
+
+void CEditorSpec::AddDrawSegment(const vec2 &Start, const vec2 &End, const ColorRGBA &Color, int ClientId)
+{
+	if(distance(Start, End) < 0.5f)
+	{
+		return;
+	}
+	SDrawSegment Segment;
+	Segment.m_Start = Start;
+	Segment.m_End = End;
+	Segment.m_Color = Color;
+	const int Lifetime = Client()->GameTickSpeed() * DRAW_SEGMENT_LIFETIME_SECONDS;
+	Segment.m_ExpireTick = Client()->GameTick(g_Config.m_ClDummy) + Lifetime;
+	Segment.m_ClientId = ClientId;
+	m_DrawSegments.push_back(Segment);
+	if(m_DrawSegments.size() > MAX_STORED_DRAW_SEGMENTS)
+	{
+		const size_t Overflow = m_DrawSegments.size() - MAX_STORED_DRAW_SEGMENTS;
+		m_DrawSegments.erase(m_DrawSegments.begin(), m_DrawSegments.begin() + Overflow);
+	}
+}
+
+void CEditorSpec::BeginDrawText(SState &State, const vec2 &Anchor)
+{
+	State.m_DrawSampling = false;
+	State.m_DrawHasSample = false;
+	State.m_DrawTextEditing = true;
+	State.m_DrawTextAnchor = Anchor;
+	State.m_DrawTextBuffer.clear();
+	Input()->StartTextInput();
+}
+
+void CEditorSpec::CancelDrawText(SState &State)
+{
+	if(State.m_DrawTextEditing)
+	{
+		Input()->StopTextInput();
+	}
+	State.m_DrawTextEditing = false;
+	State.m_DrawTextBuffer.clear();
+}
+
+void CEditorSpec::SubmitDrawText(SState &State, int Dummy)
+{
+	std::string Trimmed = State.m_DrawTextBuffer;
+	while(!Trimmed.empty() && (Trimmed.back() == '\n' || Trimmed.back() == '\r' || Trimmed.back() == ' '))
+	{
+		Trimmed.pop_back();
+	}
+	if(Trimmed.empty())
+	{
+		CancelDrawText(State);
+		return;
+	}
+	const ColorRGBA Color = DrawColorForDummy(Dummy);
+	if(GameClient()->SendEditorSpecDrawText(State.m_DrawTextAnchor, Trimmed.c_str(), Color, Dummy))
+	{
+		const char *pName = LocalPlayerName(Dummy);
+		AddDrawText(State.m_DrawTextAnchor, pName ? pName : "", Trimmed.c_str(), Color, GameClient()->ClientIdForDummy(Dummy));
+	}
+	CancelDrawText(State);
+}
+
+void CEditorSpec::AddDrawText(const vec2 &Pos, const char *pPlayerName, const char *pText, const ColorRGBA &Color, int ClientId)
+{
+	if(!pText || !pText[0])
+	{
+		return;
+	}
+	SDrawText Entry;
+	Entry.m_Pos = Pos;
+	Entry.m_Text = pText;
+	if(Entry.m_Text.size() > MAX_DRAW_TEXT_LENGTH)
+	{
+		Entry.m_Text.resize(MAX_DRAW_TEXT_LENGTH);
+	}
+	Entry.m_PlayerName = pPlayerName ? pPlayerName : "";
+	Entry.m_Color = Color;
+	Entry.m_ClientId = ClientId;
+	Entry.m_ExpireTick = Client()->GameTick(g_Config.m_ClDummy) + Client()->GameTickSpeed() * DRAW_SEGMENT_LIFETIME_SECONDS;
+	m_DrawTexts.push_back(Entry);
+	if(m_DrawTexts.size() > MAX_STORED_DRAW_TEXTS)
+	{
+		const size_t Overflow = m_DrawTexts.size() - MAX_STORED_DRAW_TEXTS;
+		m_DrawTexts.erase(m_DrawTexts.begin(), m_DrawTexts.begin() + Overflow);
+	}
+}
+
+void CEditorSpec::RenderDrawSegments()
+{
+	if(m_DrawSegments.empty())
+	{
+		return;
+	}
+	std::vector<IGraphics::CFreeformItem> vItems;
+	vItems.reserve(m_DrawSegments.size());
+	for(const auto &Segment : m_DrawSegments)
+	{
+		const vec2 Dir = Segment.m_End - Segment.m_Start;
+		if(length(Dir) < 0.5f)
+		{
+			continue;
+		}
+		const vec2 Normal = normalize(vec2(Dir.y, -Dir.x)) * DRAW_LINE_HALF_WIDTH;
+		const vec2 Pos0 = Segment.m_End + Normal;
+		const vec2 Pos1 = Segment.m_End - Normal;
+		const vec2 Pos2 = Segment.m_Start - Normal;
+		const vec2 Pos3 = Segment.m_Start + Normal;
+		vItems.emplace_back(Pos0.x, Pos0.y, Pos1.x, Pos1.y, Pos3.x, Pos3.y, Pos2.x, Pos2.y);
+	}
+	if(vItems.empty())
+	{
+		return;
+	}
+	Graphics()->TextureClear();
+	Graphics()->QuadsBegin();
+	for(size_t i = 0, idx = 0; i < m_DrawSegments.size(); ++i)
+	{
+		const auto &Segment = m_DrawSegments[i];
+		const vec2 Dir = Segment.m_End - Segment.m_Start;
+		if(length(Dir) < 0.5f)
+		{
+			continue;
+		}
+		Graphics()->SetColor(Segment.m_Color);
+		Graphics()->QuadsDrawFreeform(&vItems[idx], 1);
+		++idx;
+	}
+	Graphics()->QuadsEnd();
+}
+
+void CEditorSpec::RenderDrawTexts()
+{
+	if(m_DrawTexts.empty())
+	{
+		return;
+	}
+	float WorldX0, WorldY0, WorldX1, WorldY1;
+	Graphics()->GetScreen(&WorldX0, &WorldY0, &WorldX1, &WorldY1);
+	const float WorldWidth = WorldX1 - WorldX0;
+	const float WorldHeight = WorldY1 - WorldY0;
+	if(WorldWidth <= 0.0f || WorldHeight <= 0.0f)
+	{
+		return;
+	}
+	const float ScreenWidth = Graphics()->ScreenWidth();
+	const float ScreenHeight = Graphics()->ScreenHeight();
+	const auto WorldToScreen = [&](const vec2 &WorldPos) {
+		const float U = (WorldPos.x - WorldX0) / WorldWidth;
+		const float V = (WorldPos.y - WorldY0) / WorldHeight;
+		return vec2(U * ScreenWidth, V * ScreenHeight);
+	};
+	Graphics()->MapScreen(0.0f, 0.0f, ScreenWidth, ScreenHeight);
+	const float NameFontSize = 24.0f;
+	const float TextFontSize = 36.0f;
+	const float LineSpacing = TextFontSize + 4.0f;
+	for(const auto &Entry : m_DrawTexts)
+	{
+		const vec2 ScreenAnchor = WorldToScreen(Entry.m_Pos);
+		TextRender()->TextColor(Entry.m_Color);
+		TextRender()->TextOutlineColor(ColorRGBA(0.0f, 0.0f, 0.0f, 0.7f));
+		const float NameY = ScreenAnchor.y - (NameFontSize + 4.0f);
+		TextRender()->Text(ScreenAnchor.x, NameY, NameFontSize, Entry.m_PlayerName.c_str());
+		int LineIndex = 0;
+		size_t Start = 0;
+		while(true)
+		{
+			size_t End = Entry.m_Text.find('\n', Start);
+			std::string Line;
+			if(End == std::string::npos)
+			{
+				Line = Entry.m_Text.substr(Start);
+			}
+			else
+			{
+				Line = Entry.m_Text.substr(Start, End - Start);
+			}
+			const float LineY = ScreenAnchor.y + LineSpacing * LineIndex;
+			if(!Line.empty())
+			{
+				TextRender()->Text(ScreenAnchor.x, LineY, TextFontSize, Line.c_str());
+			}
+			if(End == std::string::npos)
+			{
+				break;
+			}
+			Start = End + 1;
+			++LineIndex;
+		}
+	}
+	TextRender()->TextColor(TextRender()->DefaultTextColor());
+	TextRender()->TextOutlineColor(TextRender()->DefaultTextOutlineColor());
+	Graphics()->MapScreen(WorldX0, WorldY0, WorldX1, WorldY1);
+}
+
+void CEditorSpec::RenderDiffOverlay(const SState &State) const
+{
+	if(!State.m_ShowDiff || !m_DiffBaselineValid)
+	{
+		return;
+	}
+	const ELayerGroup Group = State.m_SelectedLayer;
+	const auto &Snapshot = m_aDiffBaselines[static_cast<int>(Group)];
+	if(!Snapshot.m_Valid || Snapshot.m_Tiles.empty())
+	{
+		return;
+	}
+	CLayers *pLayers = GameClient()->Layers();
+	if(!pLayers)
+	{
+		return;
+	}
+	IMap *pMap = pLayers->Map();
+	if(!pMap)
+	{
+		return;
+	}
+	CMapItemLayerTilemap *pTilemap = pLayers->GetTilemapForLayer(LayerIndexForGroup(Group));
+	if(!pTilemap)
+	{
+		return;
+	}
+	const int MapWidth = pTilemap->m_Width;
+	const int MapHeight = pTilemap->m_Height;
+	if(MapWidth <= 0 || MapHeight <= 0)
+	{
+		return;
+	}
+	CTile *pTiles = LayerTileData(pMap, pTilemap, LayerIndexForGroup(Group));
+	if(!pTiles)
+	{
+		return;
+	}
+	const CTeleTile *pTeleTiles = nullptr;
+	if(Group == ELayerGroup::TELE)
+	{
+		pTeleTiles = TeleLayerData(pMap, pTilemap);
+	}
+	float ViewX0, ViewY0, ViewX1, ViewY1;
+	Graphics()->GetScreen(&ViewX0, &ViewY0, &ViewX1, &ViewY1);
+	const float TileSize = 32.0f;
+	int TileX0 = maximum(0, (int)floorf(ViewX0 / TileSize) - 1);
+	int TileY0 = maximum(0, (int)floorf(ViewY0 / TileSize) - 1);
+	int TileX1 = minimum(MapWidth - 1, (int)ceilf(ViewX1 / TileSize) + 1);
+	int TileY1 = minimum(MapHeight - 1, (int)ceilf(ViewY1 / TileSize) + 1);
+	if(TileX1 < TileX0 || TileY1 < TileY0)
+	{
+		return;
+	}
+	const size_t MapTileCount = (size_t)MapWidth * MapHeight;
+	const ColorRGBA AddColor(0.2f, 0.85f, 0.3f, 0.15f);
+	const ColorRGBA RemoveColor(0.95f, 0.3f, 0.3f, 0.15f);
+	Graphics()->TextureClear();
+	Graphics()->QuadsBegin();
+	for(int y = TileY0; y <= TileY1; ++y)
+	{
+		if(y < 0 || y >= Snapshot.m_Height)
+		{
+			continue;
+		}
+		for(int x = TileX0; x <= TileX1; ++x)
+		{
+			if(x < 0 || x >= Snapshot.m_Width)
+			{
+				continue;
+			}
+			const size_t BaseIndex = (size_t)y * Snapshot.m_Width + x;
+			const size_t CurrentIndex = (size_t)y * MapWidth + x;
+			if(BaseIndex >= Snapshot.m_Tiles.size() || CurrentIndex >= MapTileCount)
+			{
+				continue;
+			}
+			const STileSample &BaseTile = Snapshot.m_Tiles[BaseIndex];
+			STileSample CurrentSample{};
+			CurrentSample.m_Index = pTiles[CurrentIndex].m_Index;
+			CurrentSample.m_Flags = pTiles[CurrentIndex].m_Flags;
+			bool Different = CurrentSample.m_Index != BaseTile.m_Index || CurrentSample.m_Flags != BaseTile.m_Flags;
+			STeleSample BaseTele{};
+			STeleSample CurrentTele{};
+			if(Group == ELayerGroup::TELE)
+			{
+				if(BaseIndex < Snapshot.m_Tele.size())
+				{
+					BaseTele = Snapshot.m_Tele[BaseIndex];
+				}
+				if(pTeleTiles && CurrentIndex < MapTileCount)
+				{
+					const CTeleTile &TeleTile = pTeleTiles[CurrentIndex];
+					CurrentTele.m_Number = TeleTile.m_Number;
+					CurrentTele.m_Type = TeleTile.m_Type;
+				}
+				Different = Different || CurrentTele.m_Number != BaseTele.m_Number || CurrentTele.m_Type != BaseTele.m_Type;
+			}
+			if(!Different)
+			{
+				continue;
+			}
+			const bool CurrentHasContent = TileHasContent(Group, CurrentSample, CurrentTele);
+			const bool BaseHasContent = TileHasContent(Group, BaseTile, BaseTele);
+			if(!CurrentHasContent && !BaseHasContent)
+			{
+				continue;
+			}
+			const ColorRGBA &Color = CurrentHasContent ? AddColor : RemoveColor;
+			Graphics()->SetColor(Color);
+			const float QuadX = x * TileSize;
+			const float QuadY = y * TileSize;
+			IGraphics::CQuadItem Quad(QuadX, QuadY, TileSize, TileSize);
+			Graphics()->QuadsDrawTL(&Quad, 1);
+		}
+	}
+	Graphics()->QuadsEnd();
+}
+
+void CEditorSpec::RenderDrawTextPreview(const SState &State) const
+{
+	if(!State.m_DrawTextEditing)
+	{
+		return;
+	}
+	float WorldX0, WorldY0, WorldX1, WorldY1;
+	Graphics()->GetScreen(&WorldX0, &WorldY0, &WorldX1, &WorldY1);
+	const float WorldWidth = WorldX1 - WorldX0;
+	const float WorldHeight = WorldY1 - WorldY0;
+	if(WorldWidth <= 0.0f || WorldHeight <= 0.0f)
+	{
+		return;
+	}
+	const float ScreenWidth = Graphics()->ScreenWidth();
+	const float ScreenHeight = Graphics()->ScreenHeight();
+	const auto WorldToScreen = [&](const vec2 &WorldPos) {
+		const float U = (WorldPos.x - WorldX0) / WorldWidth;
+		const float V = (WorldPos.y - WorldY0) / WorldHeight;
+		return vec2(U * ScreenWidth, V * ScreenHeight);
+	};
+	Graphics()->MapScreen(0.0f, 0.0f, ScreenWidth, ScreenHeight);
+	const float NameFontSize = 24.0f;
+	const float TextFontSize = 36.0f;
+	const float LineSpacing = TextFontSize + 4.0f;
+	const int Dummy = CurrentDummy();
+	const ColorRGBA TextColor = DrawColorForDummy(Dummy);
+	TextRender()->TextColor(TextColor);
+	TextRender()->TextOutlineColor(ColorRGBA(0.0f, 0.0f, 0.0f, 0.7f));
+	const char *pName = LocalPlayerName(Dummy);
+	const vec2 ScreenAnchor = WorldToScreen(State.m_DrawTextAnchor);
+	const float NameY = ScreenAnchor.y - (NameFontSize + 4.0f);
+	TextRender()->Text(ScreenAnchor.x, NameY, NameFontSize, pName ? pName : "");
+	int LineIndex = 0;
+	size_t Start = 0;
+	const std::string &Buffer = State.m_DrawTextBuffer;
+	if(Buffer.empty())
+	{
+		TextRender()->Text(ScreenAnchor.x, ScreenAnchor.y, TextFontSize, "");
+	}
+	else
+	{
+		while(true)
+		{
+			size_t End = Buffer.find('\n', Start);
+			std::string Line;
+			if(End == std::string::npos)
+			{
+				Line = Buffer.substr(Start);
+			}
+			else
+			{
+				Line = Buffer.substr(Start, End - Start);
+			}
+			const float LineY = ScreenAnchor.y + LineSpacing * LineIndex;
+			if(!Line.empty())
+			{
+				TextRender()->Text(ScreenAnchor.x, LineY, TextFontSize, Line.c_str());
+			}
+			if(End == std::string::npos)
+			{
+				break;
+			}
+			Start = End + 1;
+			++LineIndex;
+		}
+	}
+	TextRender()->TextColor(TextRender()->DefaultTextColor());
+	TextRender()->TextOutlineColor(TextRender()->DefaultTextOutlineColor());
+	Graphics()->MapScreen(WorldX0, WorldY0, WorldX1, WorldY1);
+}
+
+void CEditorSpec::EnsureDiffBaseline()
+{
+	if(m_DiffBaselineValid)
+	{
+		return;
+	}
+	CaptureDiffBaseline();
+}
+
+void CEditorSpec::CaptureDiffBaseline()
+{
+	CLayers *pLayers = GameClient()->Layers();
+	IMap *pMap = pLayers ? pLayers->Map() : nullptr;
+	if(!pLayers || !pMap)
+	{
+		InvalidateDiffBaseline();
+		return;
+	}
+	for(int LayerIdx = 0; LayerIdx < static_cast<int>(ELayerGroup::COUNT); ++LayerIdx)
+	{
+		auto &Snapshot = m_aDiffBaselines[LayerIdx];
+		Snapshot.Clear();
+		const ELayerGroup Group = static_cast<ELayerGroup>(LayerIdx);
+		CMapItemLayerTilemap *pTilemap = pLayers->GetTilemapForLayer(LayerIndexForGroup(Group));
+		if(!pTilemap)
+		{
+			continue;
+		}
+		const size_t TileCount = (size_t)pTilemap->m_Width * pTilemap->m_Height;
+		if(TileCount == 0)
+		{
+			continue;
+		}
+		CTile *pTiles = LayerTileData(pMap, pTilemap, LayerIndexForGroup(Group));
+		if(!pTiles)
+		{
+			continue;
+		}
+		Snapshot.m_Width = pTilemap->m_Width;
+		Snapshot.m_Height = pTilemap->m_Height;
+		Snapshot.m_Tiles.resize(TileCount);
+		for(size_t i = 0; i < TileCount; ++i)
+		{
+			Snapshot.m_Tiles[i].m_Index = pTiles[i].m_Index;
+			Snapshot.m_Tiles[i].m_Flags = pTiles[i].m_Flags;
+		}
+		if(Group == ELayerGroup::TELE)
+		{
+			Snapshot.m_Tele.resize(TileCount);
+			CTeleTile *pTeleTiles = TeleLayerData(pMap, pTilemap);
+			if(pTeleTiles)
+			{
+				for(size_t i = 0; i < TileCount; ++i)
+				{
+					Snapshot.m_Tele[i].m_Number = pTeleTiles[i].m_Number;
+					Snapshot.m_Tele[i].m_Type = pTeleTiles[i].m_Type;
+				}
+			}
+			else
+			{
+				for(auto &Cell : Snapshot.m_Tele)
+				{
+					Cell.m_Number = 0;
+					Cell.m_Type = 0;
+				}
+			}
+		}
+		Snapshot.m_Valid = true;
+	}
+	m_DiffBaselineValid = true;
+}
+
+void CEditorSpec::InvalidateDiffBaseline()
+{
+	m_DiffBaselineValid = false;
+	for(auto &Snapshot : m_aDiffBaselines)
+	{
+		Snapshot.Clear();
+	}
+}
+
+void CEditorSpec::PruneExpiredDrawSegments()
+{
+	if(m_DrawSegments.empty())
+	{
+		return;
+	}
+	const int CurrentTick = Client()->GameTick(g_Config.m_ClDummy);
+	m_DrawSegments.erase(
+		std::remove_if(m_DrawSegments.begin(), m_DrawSegments.end(), [CurrentTick](const SDrawSegment &Segment) {
+			return Segment.m_ExpireTick <= CurrentTick;
+		}),
+		m_DrawSegments.end());
+}
+
+void CEditorSpec::PruneExpiredDrawTexts()
+{
+	if(m_DrawTexts.empty())
+	{
+		return;
+	}
+	const int CurrentTick = Client()->GameTick(g_Config.m_ClDummy);
+	m_DrawTexts.erase(
+		std::remove_if(m_DrawTexts.begin(), m_DrawTexts.end(), [CurrentTick](const SDrawText &Entry) {
+			return Entry.m_ExpireTick <= CurrentTick;
+		}),
+		m_DrawTexts.end());
+}
+
+void CEditorSpec::ClearDrawState(SState &State)
+{
+	State.m_DrawSampling = false;
+	State.m_DrawHasSample = false;
+	State.m_DrawLastSampleWorld = vec2(0.0f, 0.0f);
+	State.m_DrawNextSampleTick = 0;
+	CancelDrawText(State);
+}
+
+const char *CEditorSpec::LocalPlayerName(int Dummy) const
+{
+	const int ClientId = GameClient()->ClientIdForDummy(Dummy);
+	if(ClientId >= 0 && ClientId < MAX_CLIENTS)
+	{
+		return GameClient()->m_aClients[ClientId].m_aName;
+	}
+	return "";
+}
+
+ColorRGBA CEditorSpec::DrawColorForDummy(int Dummy) const
+{
+	const int ClientId = GameClient()->ClientIdForDummy(Dummy);
+	if(ClientId >= 0 && ClientId < MAX_CLIENTS)
+	{
+		const CGameClient::CClientData &ClientData = GameClient()->m_aClients[ClientId];
+		ColorRGBA Color = ClientData.m_RenderInfo.m_ColorBody;
+		if(Color.a <= 0.0f)
+		{
+			Color.a = 1.0f;
+		}
+		return Color;
+	}
+	return DRAW_DEFAULT_COLOR;
 }

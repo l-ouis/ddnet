@@ -29,8 +29,15 @@ void CEmoticon::ConKeyEmoticon(IConsole::IResult *pResult, void *pUserData)
 	if(pSelf->GameClient()->m_Scoreboard.IsActive())
 		return;
 
-	if(!pSelf->GameClient()->m_Snap.m_SpecInfo.m_Active && pSelf->Client()->State() != IClient::STATE_DEMOPLAYBACK)
+	const bool InSpectateMode = pSelf->GameClient()->m_Snap.m_SpecInfo.m_Active || pSelf->GameClient()->EditorSpecActive();
+	if(!InSpectateMode && pSelf->Client()->State() != IClient::STATE_DEMOPLAYBACK)
+	{
 		pSelf->m_Active = pResult->GetInteger(0) != 0;
+	}
+	else if(InSpectateMode)
+	{
+		pSelf->m_Active = false;
+	}
 }
 
 void CEmoticon::ConEmote(IConsole::IResult *pResult, void *pUserData)
@@ -125,7 +132,7 @@ void CEmoticon::OnRender()
 		return;
 	}
 
-	if(GameClient()->m_Snap.m_SpecInfo.m_Active)
+	if(GameClient()->m_Snap.m_SpecInfo.m_Active || GameClient()->EditorSpecActive())
 	{
 		m_Active = false;
 		m_WasActive = false;
