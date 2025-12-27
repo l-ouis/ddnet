@@ -8,6 +8,7 @@
 #include <engine/console.h>
 #include <engine/graphics.h>
 #include <engine/map.h>
+#include <engine/storage.h>
 #include <engine/textrender.h>
 #include <engine/shared/config.h>
 
@@ -61,6 +62,9 @@ constexpr float TELE_INPUT_TEXT_PADDING = 9.0f;
 constexpr float TELE_INPUT_HASH_GAP = 6.0f;
 constexpr int TELE_NUMBER_MIN = 1;
 constexpr int TELE_NUMBER_MAX = 256;
+constexpr int BRUSH_PICKER_COLS = 16;
+constexpr int BRUSH_PICKER_ROWS = 16;
+constexpr float BRUSH_PICKER_BASE_TILE_SIZE = 32.0f;
 constexpr int DRAW_SAMPLE_TICK_STEP = 2;
 constexpr int DRAW_SEGMENT_LIFETIME_SECONDS = 60;
 constexpr size_t MAX_STORED_DRAW_SEGMENTS = 1024;
@@ -290,6 +294,106 @@ void RemapBrushSamples(const std::vector<SampleType> &Source, std::vector<Sample
 		}
 	}
 }
+
+int RotateTileFlagsCW(int Flags)
+{
+	if(Flags & TILEFLAG_ROTATE)
+	{
+		Flags ^= (TILEFLAG_YFLIP | TILEFLAG_XFLIP);
+	}
+	Flags ^= TILEFLAG_ROTATE;
+	return Flags;
+}
+
+int RotateTileFlags(int Flags, bool Clockwise)
+{
+	int Steps = Clockwise ? 1 : 3;
+	Steps %= 4;
+	for(int i = 0; i < Steps; ++i)
+	{
+		Flags = RotateTileFlagsCW(Flags);
+	}
+	return Flags;
+}
+
+int FlipTileFlagsHorizontal(int Flags)
+{
+	return Flags ^ ((Flags & TILEFLAG_ROTATE) ? TILEFLAG_YFLIP : TILEFLAG_XFLIP);
+}
+
+int FlipTileFlagsVertical(int Flags)
+{
+	return Flags ^ ((Flags & TILEFLAG_ROTATE) ? TILEFLAG_XFLIP : TILEFLAG_YFLIP);
+}
+}
+
+const char *CEditorSpec::BrushPickerEntitiesName() const
+{
+	return "DDNet";
+	// const CGameInfo &Info = GameClient()->m_GameInfo;
+	// if(Info.m_EntitiesFDDrace)
+	// 	return "F-DDrace";
+	// if(Info.m_EntitiesFNG)
+	// 	return "FNG";
+	// if(Info.m_EntitiesBW)
+	// 	return "blockworlds";
+	// if(Info.m_EntitiesRace)
+	// 	return "Race";
+	// if(Info.m_EntitiesVanilla)
+	// 	return "Vanilla";
+	// return "DDNet";
+}
+
+int CEditorSpec::BrushPickerTextureLoadFlags() const
+{
+	return Graphics()->Uses2DTextureArrays() ? IGraphics::TEXLOAD_TO_2D_ARRAY_TEXTURE : IGraphics::TEXLOAD_TO_3D_TEXTURE;
+}
+
+IGraphics::CTextureHandle CEditorSpec::BrushPickerTexture(ELayerGroup Layer) const
+{
+	const int TextureFlags = BrushPickerTextureLoadFlags();
+	const auto EnsureTexture = [&](IGraphics::CTextureHandle &Handle, const char *pPath) -> IGraphics::CTextureHandle {
+		if(!Handle.IsValid())
+		{
+			Handle = Graphics()->LoadTexture(pPath, IStorage::TYPE_ALL, TextureFlags);
+		}
+		return Handle;
+	};
+
+	switch(Layer)
+	{
+	case ELayerGroup::FRONT:
+		return EnsureTexture(m_BrushPickerFrontTexture, "editor/front.png");
+	case ELayerGroup::TELE:
+		return EnsureTexture(m_BrushPickerTeleTexture, "editor/tele.png");
+	case ELayerGroup::GAME:
+	default:
+	{
+		const char *pEntitiesName = BrushPickerEntitiesName();
+		if(m_aBrushPickerEntitiesName[0] == '\0' || str_comp(m_aBrushPickerEntitiesName, pEntitiesName) != 0)
+		{
+			if(m_BrushPickerGameTexture.IsValid())
+			{
+				Graphics()->UnloadTexture(&m_BrushPickerGameTexture);
+			}
+			str_copy(m_aBrushPickerEntitiesName, pEntitiesName, sizeof(m_aBrushPickerEntitiesName));
+		}
+		if(!m_BrushPickerGameTexture.IsValid())
+		{
+			char aPath[IO_MAX_PATH_LENGTH];
+			str_format(aPath, sizeof(aPath), "editor/entities/%s.png", m_aBrushPickerEntitiesName);
+			m_BrushPickerGameTexture = Graphics()->LoadTexture(aPath, IStorage::TYPE_ALL, TextureFlags);
+			if(!m_BrushPickerGameTexture.IsValid() && str_comp(m_aBrushPickerEntitiesName, "DDNet") != 0)
+			{
+				Console()->Print(IConsole::OUTPUT_LEVEL_ADDINFO, "editorspec", "Failed to load entities tileset, falling back to DDNet");
+				str_copy(m_aBrushPickerEntitiesName, "DDNet", sizeof(m_aBrushPickerEntitiesName));
+				str_format(aPath, sizeof(aPath), "editor/entities/%s.png", m_aBrushPickerEntitiesName);
+				m_BrushPickerGameTexture = Graphics()->LoadTexture(aPath, IStorage::TYPE_ALL, TextureFlags);
+			}
+		}
+		return m_BrushPickerGameTexture;
+	}
+	}
 }
 
 void CEditorSpec::ResetTeleInputBuffer(SState &State)
@@ -474,6 +578,126 @@ bool CEditorSpec::TileHasContent(ELayerGroup Group, const STileSample &Tile, con
 		return Tele.m_Number != 0 || Tele.m_Type != 0;
 	}
 	return false;
+}
+
+bool CEditorSpec::BrushPickerVisible(const SState &State) const
+{
+	return State.m_Active && State.m_SelectedPrimaryTool == PRIMARY_TOOL_PAINTBRUSH && State.m_SpaceHeld && !State.m_CtrlHeld && !State.m_DrawTextEditing;
+}
+
+float CEditorSpec::BrushPickerTileSizeWorld() const
+{
+	const float Zoom = maximum(GameClient()->m_Camera.m_Zoom, 0.01f);
+	return BRUSH_PICKER_BASE_TILE_SIZE * Zoom;
+}
+
+vec2 CEditorSpec::BrushPickerTopLeft(float TileSize) const
+{
+	const vec2 PickerSize(BRUSH_PICKER_COLS * TileSize, BRUSH_PICKER_ROWS * TileSize);
+	const vec2 Center = GameClient()->m_Camera.m_Center;
+	return Center - PickerSize * 0.5f;
+}
+
+bool CEditorSpec::BrushPickerCellFromWorld(const SState &State, const vec2 &WorldPos, ivec2 &OutCell) const
+{
+	if(!BrushPickerVisible(State))
+	{
+		return false;
+	}
+	const float TileSize = BrushPickerTileSizeWorld();
+	const vec2 TopLeft = BrushPickerTopLeft(TileSize);
+	const vec2 Local = WorldPos - TopLeft;
+	if(Local.x < 0.0f || Local.y < 0.0f)
+	{
+		return false;
+	}
+	const int CellX = static_cast<int>(floor(Local.x / TileSize));
+	const int CellY = static_cast<int>(floor(Local.y / TileSize));
+	if(CellX < 0 || CellX >= BRUSH_PICKER_COLS || CellY < 0 || CellY >= BRUSH_PICKER_ROWS)
+	{
+		return false;
+	}
+	OutCell = ivec2(CellX, CellY);
+	return true;
+}
+
+bool CEditorSpec::TileIndexValidForLayer(ELayerGroup Layer, int TileIndex) const
+{
+	switch(Layer)
+	{
+	case ELayerGroup::FRONT:
+		return TileIndex == TILE_AIR || IsValidFrontTile(TileIndex);
+	case ELayerGroup::TELE:
+		return TileIndex == TILE_AIR || IsValidTeleTile(TileIndex);
+	case ELayerGroup::GAME:
+	default:
+		return TileIndex == TILE_AIR || IsValidGameTile(TileIndex);
+	}
+}
+
+void CEditorSpec::ApplyBrushPickerSelection(SState &State, const ivec2 &TopLeftCell, const ivec2 &Size)
+{
+	if(Size.x <= 0 || Size.y <= 0)
+	{
+		return;
+	}
+	const int StartX = std::clamp(TopLeftCell.x, 0, BRUSH_PICKER_COLS - 1);
+	const int StartY = std::clamp(TopLeftCell.y, 0, BRUSH_PICKER_ROWS - 1);
+	const int EndX = std::clamp(TopLeftCell.x + Size.x - 1, 0, BRUSH_PICKER_COLS - 1);
+	const int EndY = std::clamp(TopLeftCell.y + Size.y - 1, 0, BRUSH_PICKER_ROWS - 1);
+	const int Width = EndX - StartX + 1;
+	const int Height = EndY - StartY + 1;
+	if(Width <= 0 || Height <= 0)
+	{
+		return;
+	}
+
+	State.m_Brush.Clear();
+	State.m_Brush.m_Active = true;
+	State.m_Brush.m_Size = ivec2(Width, Height);
+	const int LayerIndex = std::clamp(static_cast<int>(State.m_SelectedLayer), 0, static_cast<int>(ELayerGroup::COUNT) - 1);
+	for(int i = 0; i < static_cast<int>(ELayerGroup::COUNT); ++i)
+	{
+		State.m_Brush.m_aLayers[i].m_Group = static_cast<ELayerGroup>(i);
+	}
+	SBrushLayer &Layer = State.m_Brush.m_aLayers[LayerIndex];
+	Layer.m_Group = State.m_SelectedLayer;
+	Layer.m_Width = Width;
+	Layer.m_Height = Height;
+	Layer.m_Tiles.assign(Width * Height, STileSample());
+	if(State.m_SelectedLayer == ELayerGroup::TELE)
+	{
+		Layer.m_Tele.assign(Width * Height, STeleSample());
+	}
+	else
+	{
+		Layer.m_Tele.clear();
+	}
+
+	for(int y = 0; y < Height; ++y)
+	{
+		for(int x = 0; x < Width; ++x)
+		{
+			const int CellX = StartX + x;
+			const int CellY = StartY + y;
+			const int TileIndex = std::clamp(CellY, 0, BRUSH_PICKER_ROWS - 1) * BRUSH_PICKER_COLS + std::clamp(CellX, 0, BRUSH_PICKER_COLS - 1);
+			STileSample Sample{};
+			Sample.m_Index = TileIndex;
+			Sample.m_Flags = 0;
+			if(!TileIndexValidForLayer(State.m_SelectedLayer, Sample.m_Index))
+			{
+				Sample.m_Index = TILE_AIR;
+			}
+			Layer.m_Tiles[y * Width + x] = Sample;
+		}
+	}
+
+	State.m_BrushPreviewValid = false;
+	State.m_BrushPainting = false;
+	State.m_BrushSelecting = false;
+	State.m_AreaSelecting = false;
+	State.m_LastBrushApplyTile = ivec2(-1, -1);
+	UpdateBrushPreview(State);
 }
 
 bool CEditorSpec::CaptureBrushFromSelection(SState &State, const ivec2 &TopLeftTile, const ivec2 &Size)
@@ -808,6 +1032,20 @@ bool CEditorSpec::RotateBrush(SState &State, bool Clockwise)
 			RemapBrushSamples(Layer.m_Tiles, NewTiles, OldWidth, OldHeight, NewWidth, NewHeight, MapFunc);
 		}
 		Layer.m_Tiles = std::move(NewTiles);
+		for(auto &Tile : Layer.m_Tiles)
+		{
+			if(Tile.m_Index == TILE_AIR)
+			{
+				Tile.m_Flags = 0;
+				continue;
+			}
+			if(!IsRotatableTile(Tile.m_Index))
+			{
+				Tile.m_Flags = 0;
+				continue;
+			}
+			Tile.m_Flags = RotateTileFlags(Tile.m_Flags, Clockwise);
+		}
 		if(!Layer.m_Tele.empty())
 		{
 			std::vector<STeleSample> NewTele(NewTileCount, STeleSample());
@@ -870,6 +1108,20 @@ bool CEditorSpec::MirrorBrush(SState &State, bool Horizontal)
 			RemapBrushSamples(Layer.m_Tiles, NewTiles, OldWidth, OldHeight, OldWidth, OldHeight, MapFunc);
 		}
 		Layer.m_Tiles = std::move(NewTiles);
+		for(auto &Tile : Layer.m_Tiles)
+		{
+			if(Tile.m_Index == TILE_AIR)
+			{
+				Tile.m_Flags = 0;
+				continue;
+			}
+			if(!IsRotatableTile(Tile.m_Index))
+			{
+				Tile.m_Flags = 0;
+				continue;
+			}
+			Tile.m_Flags = Horizontal ? FlipTileFlagsHorizontal(Tile.m_Flags) : FlipTileFlagsVertical(Tile.m_Flags);
+		}
 		if(!Layer.m_Tele.empty())
 		{
 			std::vector<STeleSample> NewTele(TileCount, STeleSample());
@@ -971,7 +1223,8 @@ void CEditorSpec::RenderBrushOverlay(const SState &State) const
 						const float TileWorldX = (State.m_BrushPreviewTile.x + x) * 32.0f;
 						const float TileWorldY = (State.m_BrushPreviewTile.y + y) * 32.0f;
 						const unsigned char TileIndex = static_cast<unsigned char>(std::clamp(Tile.m_Index, 0, 255));
-						pRenderMap->RenderTile(TileWorldX, TileWorldY, TileIndex, 32.0f, Tint);
+						const unsigned char TileFlags = static_cast<unsigned char>(std::clamp(Tile.m_Flags, 0, 255));
+						pRenderMap->RenderTile(TileWorldX, TileWorldY, TileIndex, 32.0f, Tint, TileFlags);
 						Any = true;
 					}
 				}
@@ -990,8 +1243,107 @@ void CEditorSpec::RenderBrushOverlay(const SState &State) const
 		}
 		const float HighlightAlpha = RenderedTiles ? 0.08f : 0.35f;
 		Graphics()->DrawRect(WorldX, WorldY, Width, Height, ColorRGBA(1.0f, 1.0f, 1.0f, HighlightAlpha), IGraphics::CORNER_ALL, 6.0f);
+		}
 	}
-}
+
+	void CEditorSpec::RenderBrushPicker(const SState &State) const
+	{
+		if(!BrushPickerVisible(State))
+		{
+			return;
+		}
+		const float TileSize = BrushPickerTileSizeWorld();
+		const vec2 GridSize(BRUSH_PICKER_COLS * TileSize, BRUSH_PICKER_ROWS * TileSize);
+		const vec2 TopLeft = BrushPickerTopLeft(TileSize);
+		float ViewX0, ViewY0, ViewX1, ViewY1;
+		Graphics()->GetScreen(&ViewX0, &ViewY0, &ViewX1, &ViewY1);
+
+		Graphics()->TextureClear();
+		Graphics()->QuadsBegin();
+		Graphics()->SetColor(0.16f, 0.16f, 0.16f, 0.65f);
+		IGraphics::CQuadItem Fade(ViewX0, ViewY0, ViewX1 - ViewX0, ViewY1 - ViewY0);
+		Graphics()->QuadsDrawTL(&Fade, 1);
+		Graphics()->QuadsEnd();
+
+		const float Padding = TileSize * 0.5f;
+		Graphics()->DrawRect(TopLeft.x - Padding, TopLeft.y - Padding, GridSize.x + Padding * 2.0f, GridSize.y + Padding * 2.0f, ColorRGBA(0.2f, 0.2f, 0.2f, 0.95f), IGraphics::CORNER_ALL, 12.0f * maximum(TileSize / 32.0f, 0.5f));
+		Graphics()->DrawRect(TopLeft.x, TopLeft.y, GridSize.x, GridSize.y, ColorRGBA(0.24f, 0.24f, 0.24f, 0.98f), 0, 0.0f);
+
+		CRenderMap *pRenderMap = RenderMap();
+		if(pRenderMap)
+		{
+			const IGraphics::CTextureHandle PickerTexture = BrushPickerTexture(State.m_SelectedLayer);
+			if(PickerTexture.IsValid())
+			{
+				Graphics()->TextureSet(PickerTexture);
+				Graphics()->BlendNormal();
+				const ColorRGBA TileTint = State.m_SelectedLayer == ELayerGroup::FRONT ? ColorRGBA(1.0f, 1.0f, 1.0f, 0.7f) : ColorRGBA(1.0f, 1.0f, 1.0f, 1.0f);
+				for(int y = 0; y < BRUSH_PICKER_ROWS; ++y)
+				{
+					for(int x = 0; x < BRUSH_PICKER_COLS; ++x)
+					{
+						const int TileIndex = y * BRUSH_PICKER_COLS + x;
+						const float TileX = TopLeft.x + x * TileSize;
+						const float TileY = TopLeft.y + y * TileSize;
+						pRenderMap->RenderTile(static_cast<int>(TileX), static_cast<int>(TileY), static_cast<unsigned char>(TileIndex), TileSize, TileTint);
+					}
+				}
+			}
+		}
+
+		Graphics()->TextureClear();
+		const ColorRGBA LineColor(1.0f, 1.0f, 1.0f, 0.06f);
+		const float LineThickness = maximum(TileSize * 0.03f, 1.0f);
+		for(int c = 1; c < BRUSH_PICKER_COLS; ++c)
+		{
+			const float LineX = TopLeft.x + c * TileSize - LineThickness * 0.5f;
+			Graphics()->DrawRect(LineX, TopLeft.y, LineThickness, GridSize.y, LineColor, 0, 0.0f);
+		}
+		for(int r = 1; r < BRUSH_PICKER_ROWS; ++r)
+		{
+			const float LineY = TopLeft.y + r * TileSize - LineThickness * 0.5f;
+			Graphics()->DrawRect(TopLeft.x, LineY, GridSize.x, LineThickness, LineColor, 0, 0.0f);
+		}
+
+		const auto RenderHighlight = [&](const ivec2 &Cell, const ColorRGBA &Color) {
+			const float X = TopLeft.x + Cell.x * TileSize;
+			const float Y = TopLeft.y + Cell.y * TileSize;
+			Graphics()->DrawRect(X, Y, TileSize, TileSize, Color, 0, 0.0f);
+		};
+		if(State.m_BrushPickerHasHover)
+		{
+			RenderHighlight(State.m_BrushPickerHoverCell, ColorRGBA(1.0f, 1.0f, 1.0f, 0.18f));
+		}
+		if(State.m_BrushPickerSelecting)
+		{
+			const ivec2 Start = State.m_BrushPickerStartCell;
+			const ivec2 End = State.m_BrushPickerCurrentCell;
+			const int MinX = minimum(Start.x, End.x);
+			const int MinY = minimum(Start.y, End.y);
+			const int Width = abs(Start.x - End.x) + 1;
+			const int Height = abs(Start.y - End.y) + 1;
+			const float SelX = TopLeft.x + MinX * TileSize;
+			const float SelY = TopLeft.y + MinY * TileSize;
+			const float SelW = Width * TileSize;
+			const float SelH = Height * TileSize;
+			Graphics()->DrawRect(SelX, SelY, SelW, SelH, ColorRGBA(0.2f, 0.6f, 1.0f, 0.2f), 0, 0.0f);
+			const float Border = maximum(TileSize * 0.06f, 1.0f);
+			Graphics()->DrawRect(SelX, SelY, SelW, Border, ColorRGBA(0.7f, 0.85f, 1.0f, 0.9f), 0, 0.0f);
+			Graphics()->DrawRect(SelX, SelY + SelH - Border, SelW, Border, ColorRGBA(0.7f, 0.85f, 1.0f, 0.9f), 0, 0.0f);
+			Graphics()->DrawRect(SelX, SelY + Border, Border, SelH - 2.0f * Border, ColorRGBA(0.7f, 0.85f, 1.0f, 0.9f), 0, 0.0f);
+			Graphics()->DrawRect(SelX + SelW - Border, SelY + Border, Border, SelH - 2.0f * Border, ColorRGBA(0.7f, 0.85f, 1.0f, 0.9f), 0, 0.0f);
+		}
+
+		TextRender()->TextColor(ColorRGBA(1.0f, 1.0f, 1.0f, 0.95f));
+		TextRender()->TextOutlineColor(ColorRGBA(0.0f, 0.0f, 0.0f, 0.8f));
+		const float LabelFontSize = 18.0f * maximum(TileSize / 32.0f, 0.6f);
+		const char *pLayerName = LayerDisplayName(State.m_SelectedLayer);
+		const float LabelX = TopLeft.x;
+		const float LabelY = TopLeft.y - Padding * 0.75f - LabelFontSize;
+		TextRender()->Text(LabelX, LabelY, LabelFontSize, pLayerName);
+		TextRender()->TextOutlineColor(TextRender()->DefaultTextOutlineColor());
+		TextRender()->TextColor(TextRender()->DefaultTextColor());
+	}
 
 int CEditorSpec::CurrentDummy() const
 {
@@ -1228,6 +1580,39 @@ bool CEditorSpec::OnCursorMove(float x, float y, IInput::ECursorType CursorType)
 		State.m_ToolPalettePos = State.m_CursorWorld - State.m_ToolPaletteDragOffset;
 	}
 
+	const bool PickerVisible = BrushPickerVisible(State);
+	if(PickerVisible)
+	{
+		ivec2 Cell;
+		if(BrushPickerCellFromWorld(State, State.m_CursorWorld, Cell))
+		{
+			State.m_BrushPickerHasHover = true;
+			State.m_BrushPickerHoverCell = Cell;
+			if(State.m_BrushPickerSelecting)
+			{
+				State.m_BrushPickerCurrentCell = Cell;
+			}
+		}
+		else
+		{
+			State.m_BrushPickerHasHover = false;
+			if(State.m_BrushPickerSelecting)
+			{
+				const float TileSize = BrushPickerTileSizeWorld();
+				const vec2 TopLeft = BrushPickerTopLeft(TileSize);
+				const vec2 Local = State.m_CursorWorld - TopLeft;
+				const int CellX = std::clamp(static_cast<int>(floor(Local.x / TileSize)), 0, BRUSH_PICKER_COLS - 1);
+				const int CellY = std::clamp(static_cast<int>(floor(Local.y / TileSize)), 0, BRUSH_PICKER_ROWS - 1);
+				State.m_BrushPickerCurrentCell = ivec2(CellX, CellY);
+			}
+		}
+	}
+	else
+	{
+		State.m_BrushPickerSelecting = false;
+		State.m_BrushPickerHasHover = false;
+	}
+
 	UpdateBrushPreview(State);
 
 	if(State.m_BrushPainting)
@@ -1319,6 +1704,19 @@ bool CEditorSpec::OnInput(const IInput::CEvent &Event)
 		State.m_BrushSelecting = false;
 		State.m_BrushPainting = false;
 		State.m_LastBrushApplyTile = ivec2(-1, -1);
+	};
+
+	const auto CommitBrushPickerSelection = [&]() {
+		if(!State.m_BrushPickerSelecting)
+		{
+			return;
+		}
+		const ivec2 Start = State.m_BrushPickerStartCell;
+		const ivec2 End = State.m_BrushPickerCurrentCell;
+		ivec2 TopLeft(minimum(Start.x, End.x), minimum(Start.y, End.y));
+		ivec2 Size(abs(Start.x - End.x) + 1, abs(Start.y - End.y) + 1);
+		ApplyBrushPickerSelection(State, TopLeft, Size);
+		State.m_BrushPickerSelecting = false;
 	};
 
 	if(State.m_TeleInputEditing && (Event.m_Flags & IInput::FLAG_TEXT))
@@ -1444,6 +1842,29 @@ bool CEditorSpec::OnInput(const IInput::CEvent &Event)
 		return true;
 	}
 
+	if(Event.m_Key == KEY_SPACE)
+	{
+		if(Press && !State.m_SpaceHeld)
+		{
+			State.m_SpaceHeld = true;
+			State.m_AreaSelecting = false;
+			State.m_BrushSelecting = false;
+			State.m_BrushPainting = false;
+			State.m_BrushPickerSelecting = false;
+		}
+		else if(Release && State.m_SpaceHeld)
+		{
+			if(State.m_BrushPickerSelecting)
+			{
+				CommitBrushPickerSelection();
+			}
+			State.m_SpaceHeld = false;
+			State.m_BrushPickerSelecting = false;
+			State.m_BrushPickerHasHover = false;
+		}
+		return false;
+	}
+
 	if(!State.m_Active)
 	{
 		if(Event.m_Key == KEY_MOUSE_1 && Release)
@@ -1488,6 +1909,8 @@ bool CEditorSpec::OnInput(const IInput::CEvent &Event)
 	{
 		if(!State.m_Active)
 			return false;
+		if(BrushPickerVisible(State))
+			return true;
 		if(Press)
 		{
 			State.m_AreaSelecting = false;
@@ -1543,6 +1966,26 @@ bool CEditorSpec::OnInput(const IInput::CEvent &Event)
 			State.m_LeftMouseHeld = true;
 		else if(Release)
 			State.m_LeftMouseHeld = false;
+
+		const bool PickerVisibleNow = BrushPickerVisible(State);
+		if(PickerVisibleNow)
+		{
+			if(Press)
+			{
+				ivec2 Cell;
+				if(BrushPickerCellFromWorld(State, State.m_CursorWorld, Cell))
+				{
+					State.m_BrushPickerSelecting = true;
+					State.m_BrushPickerStartCell = Cell;
+					State.m_BrushPickerCurrentCell = Cell;
+				}
+			}
+			else if(Release)
+			{
+				CommitBrushPickerSelection();
+			}
+			return true;
+		}
 
 		if(Press && State.m_TeleInputEditing && (!TeleMenuActive || !CursorInTeleInput))
 			FinishTeleInputEditing(State);
@@ -2073,6 +2516,8 @@ void CEditorSpec::OnRender()
 			RenderTeleMenu();
 		RenderLayerDropdownOptions();
 	}
+
+	RenderBrushPicker(State);
     
 	if(State.m_Active)
 	{
