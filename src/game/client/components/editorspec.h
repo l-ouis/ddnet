@@ -8,6 +8,7 @@
 #include <engine/client/enums.h>
 #include <engine/console.h>
 #include <engine/input.h>
+#include <engine/graphics.h>
 
 #include <generated/protocol.h>
 
@@ -104,6 +105,7 @@ private:
 		bool m_LeftMouseHeld = false;
 		bool m_CtrlHeld = false;
 		bool m_ShiftHeld = false;
+		bool m_SpaceHeld = false;
 		vec2 m_CursorWorld = vec2(0.0f, 0.0f);
 		ivec2 m_LastSentCursor = ivec2(0, 0);
 		bool m_ToolPaletteActive = false;
@@ -128,6 +130,11 @@ private:
 		ELayerGroup m_AreaSelectionLayer = ELayerGroup::GAME;
 		vec2 m_AreaSelectStartWorld = vec2(0.0f, 0.0f);
 		vec2 m_AreaSelectCurrentWorld = vec2(0.0f, 0.0f);
+		bool m_BrushPickerSelecting = false;
+		bool m_BrushPickerHasHover = false;
+		ivec2 m_BrushPickerStartCell = ivec2(0, 0);
+		ivec2 m_BrushPickerCurrentCell = ivec2(0, 0);
+		ivec2 m_BrushPickerHoverCell = ivec2(0, 0);
 		bool m_BrushPreviewValid = false;
 		ivec2 m_BrushPreviewTile = ivec2(0, 0);
 		bool m_BrushPainting = false;
@@ -189,9 +196,19 @@ private:
 	bool MirrorBrush(SState &State, bool Horizontal);
 	void UpdateBrushPreview(SState &State);
 	void RenderBrushOverlay(const SState &State) const;
+	void RenderBrushPicker(const SState &State) const;
+	IGraphics::CTextureHandle BrushPickerTexture(ELayerGroup Layer) const;
+	const char *BrushPickerEntitiesName() const;
+	int BrushPickerTextureLoadFlags() const;
 	bool BrushLayerHasContent(const SBrushLayer &Layer) const;
 	bool TileHasContent(ELayerGroup Group, const STileSample &Tile, const STeleSample &Tele) const;
 	int LayerIndexForGroup(ELayerGroup Group) const;
+	bool BrushPickerVisible(const SState &State) const;
+	float BrushPickerTileSizeWorld() const;
+	vec2 BrushPickerTopLeft(float TileSize) const;
+	bool BrushPickerCellFromWorld(const SState &State, const vec2 &WorldPos, ivec2 &OutCell) const;
+	void ApplyBrushPickerSelection(SState &State, const ivec2 &TopLeftCell, const ivec2 &Size);
+	bool TileIndexValidForLayer(ELayerGroup Layer, int TileIndex) const;
 	void BeginDrawStroke(SState &State, int Dummy);
 	void EndDrawStroke(SState &State);
 	void HandleDrawSampling(SState &State, int Dummy, bool ForceSample);
@@ -213,6 +230,11 @@ private:
 	void InvalidateDiffBaseline();
 	const char *LocalPlayerName(int Dummy) const;
 	ColorRGBA DrawColorForDummy(int Dummy) const;
+
+	mutable IGraphics::CTextureHandle m_BrushPickerGameTexture;
+	mutable IGraphics::CTextureHandle m_BrushPickerFrontTexture;
+	mutable IGraphics::CTextureHandle m_BrushPickerTeleTexture;
+	mutable char m_aBrushPickerEntitiesName[32] = {};
 
 	std::vector<SDrawSegment> m_DrawSegments;
 	std::vector<SDrawText> m_DrawTexts;

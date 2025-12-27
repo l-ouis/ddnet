@@ -81,6 +81,29 @@ void CClientChatLogger::Log(const CLogMessage *pMessage)
 	}
 }
 
+namespace
+{
+int64_t MakeLiveTileKey(int Layer, int X, int Y)
+{
+	const uint32_t SafeLayer = static_cast<uint32_t>(Layer) & 0xFFu;
+	const uint32_t SafeY = static_cast<uint32_t>(Y) & 0xFFFFu;
+	const uint32_t SafeX = static_cast<uint32_t>(X) & 0xFFFFu;
+	const int64_t LayerComponent = static_cast<int64_t>(SafeLayer) << 48;
+	const int64_t YComponent = static_cast<int64_t>(SafeY) << 24;
+	const int64_t XComponent = static_cast<int64_t>(SafeX);
+	return LayerComponent | YComponent | XComponent;
+}
+
+int64_t MakeLiveTeleTileKey(int X, int Y)
+{
+	const uint32_t SafeY = static_cast<uint32_t>(Y) & 0xFFFFu;
+	const uint32_t SafeX = static_cast<uint32_t>(X) & 0xFFFFu;
+	const int64_t YComponent = static_cast<int64_t>(SafeY) << 24;
+	const int64_t XComponent = static_cast<int64_t>(SafeX);
+	return YComponent | XComponent;
+}
+}
+
 CGameContext::CGameContext(bool Resetting) :
 	m_Mutes("mutes"),
 	m_VoteMutes("votemutes")
@@ -1729,6 +1752,8 @@ void CGameContext::OnClientEnter(int ClientId)
 			return; // kicked
 	}
 
+	SendLiveTileStateToClient(ClientId);
+
 	if(!Server()->ClientPrevIngame(ClientId))
 	{
 		if(g_Config.m_SvWelcome[0] != 0)
@@ -2761,6 +2786,65 @@ void CGameContext::SendEditorSpecCursorUpdate(int ClientId, bool Active, int Cur
 			continue;
 		}
 		Server()->SendPackMsg(&Msg, MSGFLAG_VITAL | MSGFLAG_NORECORD, i);
+	}
+}
+
+void CGameContext::SendLiveTileStateToClient(int ClientId) const
+{
+	if(m_LiveTileStates.empty() && m_LiveTeleTileStates.empty())
+	{
+		return;
+	}
+	if(ClientId < 0 || ClientId >= MAX_CLIENTS)
+	{
+		return;
+	}
+
+	for(const auto &Entry : m_LiveTileStates)
+	{
+		const SLiveTileState &State = Entry.second;
+		if(State.m_Layer == LAYER_TELE)
+		{
+			continue;
+		}
+		CNetMsg_Sv_ModifyTile Msg;
+		Msg.m_X = State.m_X;
+		Msg.m_Y = State.m_Y;
+		Msg.m_Layer = State.m_Layer;
+		Msg.m_Index = State.m_Index;
+		Msg.m_Flags = State.m_Flags;
+		Server()->SendPackMsg(&Msg, MSGFLAG_VITAL | MSGFLAG_NORECORD, ClientId);
+	}
+
+	for(const auto &Entry : m_LiveTileStates)
+	{
+		const SLiveTileState &State = Entry.second;
+		if(State.m_Layer != LAYER_TELE)
+		{
+			continue;
+		}
+		CNetMsg_Sv_ModifyTile TileMsg;
+		TileMsg.m_X = State.m_X;
+		TileMsg.m_Y = State.m_Y;
+		TileMsg.m_Layer = State.m_Layer;
+		TileMsg.m_Index = State.m_Index;
+		TileMsg.m_Flags = State.m_Flags;
+		Server()->SendPackMsg(&TileMsg, MSGFLAG_VITAL | MSGFLAG_NORECORD, ClientId);
+
+		const int64_t TeleKey = MakeLiveTeleTileKey(State.m_X, State.m_Y);
+		auto TeleIt = m_LiveTeleTileStates.find(TeleKey);
+		if(TeleIt == m_LiveTeleTileStates.end())
+		{
+			continue;
+		}
+		const SLiveTeleTileState &TeleState = TeleIt->second;
+		CNetMsg_Sv_ModifyTeleTile TeleMsg;
+		TeleMsg.m_X = TeleState.m_X;
+		TeleMsg.m_Y = TeleState.m_Y;
+		TeleMsg.m_Index = TeleState.m_Index;
+		TeleMsg.m_Flags = TeleState.m_Flags;
+		TeleMsg.m_Number = TeleState.m_Number;
+		Server()->SendPackMsg(&TeleMsg, MSGFLAG_VITAL | MSGFLAG_NORECORD, ClientId);
 	}
 }
 
@@ -4689,6 +4773,12 @@ void CGameContext::OnInit(const void *pPersistentData)
 
 void CGameContext::CreateAllEntities(bool Initial)
 {
+	if(Initial)
+	{
+		m_LiveTileStates.clear();
+		m_LiveTeleTileStates.clear();
+	}
+
 	const CMapItemLayerTilemap *pTileMap = m_Layers.GameLayer();
 	const CTile *pTiles = static_cast<CTile *>(Kernel()->RequestInterface<IMap>()->GetData(pTileMap->m_Data));
 
@@ -5068,6 +5158,18 @@ CTeleTile *TeleLayerExtraData(IMap *pMap, CMapItemLayerTilemap *pTilemap)
 }
 }
 
+void CGameContext::RememberLiveTileModification(int Layer, int X, int Y, int Index, int Flags)
+{
+	const int64_t Key = MakeLiveTileKey(Layer, X, Y);
+	m_LiveTileStates[Key] = {Layer, X, Y, Index, Flags};
+}
+
+void CGameContext::RememberLiveTeleTileModification(int X, int Y, int Index, int Flags, int Number)
+{
+	const int64_t Key = MakeLiveTeleTileKey(X, Y);
+	m_LiveTeleTileStates[Key] = {X, Y, Index, Flags, Number};
+}
+
 bool CGameContext::ApplyTileModification(int Layer, int X, int Y, int Index, int Flags)
 {
 	CLayers *pLayers = &m_Layers;
@@ -5097,6 +5199,7 @@ bool CGameContext::ApplyTileModification(int Layer, int X, int Y, int Index, int
 
 	Tile.m_Index = Index;
 	Tile.m_Flags = Flags;
+	RememberLiveTileModification(Layer, X, Y, Index, Flags);
 
 	if(Layer == LAYER_GAME)
 	{
@@ -5245,6 +5348,8 @@ bool CGameContext::ApplyTeleTileModification(int X, int Y, int Index, int Flags,
 	Tile.m_Flags = Flags;
 	TeleTile.m_Type = EffectiveType;
 	TeleTile.m_Number = ClampedNumber;
+	RememberLiveTileModification(LAYER_TELE, X, Y, Index, Flags);
+	RememberLiveTeleTileModification(X, Y, Index, Flags, ClampedNumber);
 
 	CNetMsg_Sv_ModifyTile TileMsg;
 	TileMsg.m_X = X;

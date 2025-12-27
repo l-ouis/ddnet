@@ -20,6 +20,7 @@
 #include <map>
 #include <memory>
 #include <string>
+#include <unordered_map>
 
 /*
 	Tick
@@ -224,11 +225,29 @@ public:
 		int m_ColorG;
 		int m_ColorB;
 	};
+	struct SLiveTileState
+	{
+		int m_Layer;
+		int m_X;
+		int m_Y;
+		int m_Index;
+		int m_Flags;
+	};
+	struct SLiveTeleTileState
+	{
+		int m_X;
+		int m_Y;
+		int m_Index;
+		int m_Flags;
+		int m_Number;
+	};
 	std::vector<SEditorSpecServerDrawSegment> m_aPendingEditorSpecDrawSegments[MAX_CLIENTS];
 	int m_aEditorSpecNextDrawBroadcastTick[MAX_CLIENTS];
 	CSaveTeam *m_apSavedTeams[MAX_CLIENTS];
 	CSaveHotReloadTee *m_apSavedTees[MAX_CLIENTS];
 	int m_aTeamMapping[MAX_CLIENTS];
+	std::unordered_map<int64_t, SLiveTileState> m_LiveTileStates;
+	std::unordered_map<int64_t, SLiveTeleTileState> m_LiveTeleTileStates;
 
 	// returns last input if available otherwise nulled PlayerInput object
 	// ClientId has to be valid
@@ -441,6 +460,10 @@ public:
 	std::shared_ptr<CScoreRandomMapResult> m_SqlRandomMapResult;
 
 private:
+	void RememberLiveTileModification(int Layer, int X, int Y, int Index, int Flags);
+	void RememberLiveTeleTileModification(int X, int Y, int Index, int Flags, int Number);
+	void SendLiveTileStateToClient(int ClientId) const;
+
 	// starting 1 to make 0 the special value "no client id"
 	uint32_t m_NextUniqueClientId = 1;
 	bool m_VoteWillPass;

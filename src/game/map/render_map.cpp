@@ -530,7 +530,7 @@ void CRenderMap::RenderTileRectangle(int RectX, int RectY, int RectW, int RectH,
 	Graphics()->MapScreen(ScreenX0, ScreenY0, ScreenX1, ScreenY1);
 }
 
-void CRenderMap::RenderTile(int x, int y, unsigned char Index, float Scale, ColorRGBA Color)
+void CRenderMap::RenderTile(int x, int y, unsigned char Index, float Scale, ColorRGBA Color, unsigned char Flags)
 {
 	if(Graphics()->HasTextureArraysSupport())
 		Graphics()->QuadsTex3DBegin();
@@ -575,6 +575,36 @@ void CRenderMap::RenderTile(int x, int y, unsigned char Index, float Scale, Colo
 		y2 = y0 + 1;
 		x3 = x0;
 		y3 = y0 + 1;
+	}
+
+	if(Flags & TILEFLAG_XFLIP)
+	{
+		x0 = x2;
+		x1 = x3;
+		x2 = x3;
+		x3 = x0;
+	}
+
+	if(Flags & TILEFLAG_YFLIP)
+	{
+		y0 = y3;
+		y2 = y1;
+		y3 = y1;
+		y1 = y0;
+	}
+
+	if(Flags & TILEFLAG_ROTATE)
+	{
+		float Tmp = x0;
+		x0 = x3;
+		x3 = x2;
+		x2 = x1;
+		x1 = Tmp;
+		Tmp = y0;
+		y0 = y3;
+		y3 = y2;
+		y2 = y1;
+		y1 = Tmp;
 	}
 
 	if(Graphics()->HasTextureArraysSupport())
