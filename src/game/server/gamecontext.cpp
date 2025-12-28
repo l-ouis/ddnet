@@ -2326,7 +2326,7 @@ void CGameContext::OnMessage(int MsgId, CUnpacker *pUnpacker, int ClientId)
 		case NETMSGTYPE_CL_REQUESTTILECHANGE:
 		{
 			const auto *pMsg = static_cast<CNetMsg_Cl_RequestTileChange *>(pRawMsg);
-			ApplyTileModification(pMsg->m_Layer, pMsg->m_X, pMsg->m_Y, pMsg->m_Index, pMsg->m_Flags);
+			ApplyTileModification(pMsg->m_Layer, pMsg->m_X, pMsg->m_Y, pMsg->m_Index, pMsg->m_Flags, true);
 			break;
 		}
 		case NETMSGTYPE_CL_REQUESTTILEAREA:
@@ -2816,28 +2816,18 @@ void CGameContext::SendLiveTileStateToClient(int ClientId) const
 		Server()->SendPackMsg(&Msg, MSGFLAG_VITAL | MSGFLAG_NORECORD, ClientId);
 	}
 
-	for(const auto &Entry : m_LiveTileStates)
+	for(const auto &Entry : m_LiveTeleTileStates)
 	{
-		const SLiveTileState &State = Entry.second;
-		if(State.m_Layer != LAYER_TELE)
-		{
-			continue;
-		}
+		const SLiveTeleTileState &TeleState = Entry.second;
+
 		CNetMsg_Sv_ModifyTile TileMsg;
-		TileMsg.m_X = State.m_X;
-		TileMsg.m_Y = State.m_Y;
-		TileMsg.m_Layer = State.m_Layer;
-		TileMsg.m_Index = State.m_Index;
-		TileMsg.m_Flags = State.m_Flags;
+		TileMsg.m_X = TeleState.m_X;
+		TileMsg.m_Y = TeleState.m_Y;
+		TileMsg.m_Layer = LAYER_TELE;
+		TileMsg.m_Index = TeleState.m_Index;
+		TileMsg.m_Flags = TeleState.m_Flags;
 		Server()->SendPackMsg(&TileMsg, MSGFLAG_VITAL | MSGFLAG_NORECORD, ClientId);
 
-		const int64_t TeleKey = MakeLiveTeleTileKey(State.m_X, State.m_Y);
-		auto TeleIt = m_LiveTeleTileStates.find(TeleKey);
-		if(TeleIt == m_LiveTeleTileStates.end())
-		{
-			continue;
-		}
-		const SLiveTeleTileState &TeleState = TeleIt->second;
 		CNetMsg_Sv_ModifyTeleTile TeleMsg;
 		TeleMsg.m_X = TeleState.m_X;
 		TeleMsg.m_Y = TeleState.m_Y;
@@ -3152,7 +3142,7 @@ void CGameContext::OnRequestTileAreaNetMessage(const CNetMsg_Cl_RequestTileArea 
 
 	if(Mode == ETileToolAreaMode::Fill)
 	{
-		ApplyTileRectangleFill(pMsg->m_Layer, pMsg->m_X, pMsg->m_Y, Width, Height, pMsg->m_Index, pMsg->m_Flags);
+		ApplyTileRectangleFill(pMsg->m_Layer, pMsg->m_X, pMsg->m_Y, Width, Height, pMsg->m_Index, pMsg->m_Flags, Destructive);
 		return;
 	}
 
@@ -5170,7 +5160,7 @@ void CGameContext::RememberLiveTeleTileModification(int X, int Y, int Index, int
 	m_LiveTeleTileStates[Key] = {X, Y, Index, Flags, Number};
 }
 
-bool CGameContext::ApplyTileModification(int Layer, int X, int Y, int Index, int Flags)
+bool CGameContext::ApplyTileModification(int Layer, int X, int Y, int Index, int Flags, bool Destructive)
 {
 	CLayers *pLayers = &m_Layers;
 	IMap *pMap = pLayers->Map();
@@ -5184,6 +5174,18 @@ bool CGameContext::ApplyTileModification(int Layer, int X, int Y, int Index, int
 		return false;
 	}
 
+	if(Index != TILE_AIR)
+	{
+		if(Layer == LAYER_GAME && !IsValidGameTile(Index))
+		{
+			return false;
+		}
+		if(Layer == LAYER_FRONT && !IsValidFrontTile(Index))
+		{
+			return false;
+		}
+	}
+
 	CTile *pTiles = TileLayerData(pMap, pTilemap, Layer);
 	if(!pTiles)
 	{
@@ -5192,9 +5194,14 @@ bool CGameContext::ApplyTileModification(int Layer, int X, int Y, int Index, int
 
 	const int TileIndex = Y * pTilemap->m_Width + X;
 	CTile &Tile = pTiles[TileIndex];
-	if(Tile.m_Index == Index && Tile.m_Flags == Flags)
+	const int OldIndex = Tile.m_Index;
+	if(OldIndex == Index && Tile.m_Flags == Flags)
 	{
 		return false;
+	}
+	if(Destructive && Layer == LAYER_GAME && Index == TILE_AIR)
+	{
+		ApplyTileModification(LAYER_FRONT, X, Y, TILE_AIR, 0, Destructive);
 	}
 
 	Tile.m_Index = Index;
@@ -5203,9 +5210,21 @@ bool CGameContext::ApplyTileModification(int Layer, int X, int Y, int Index, int
 
 	if(Layer == LAYER_GAME)
 	{
-		const float WorldX = X * 32.0f + 16.0f;
-		const float WorldY = Y * 32.0f + 16.0f;
-		m_Collision.SetCollisionAt(WorldX, WorldY, Index);
+		if(OldIndex >= ENTITY_OFFSET)
+		{
+			// find and remove existing entities at this location
+			vec2 Pos = vec2(X * 32.0f + 16.0f, Y * 32.0f + 16.0f);
+			CEntity *apEnts[64];
+			int Num = m_World.FindEntities(Pos, 1.0f, apEnts, 64, CGameWorld::ENTTYPE_PICKUP);
+			for(int i = 0; i < Num; i++)
+			{
+				m_World.RemoveEntity(apEnts[i]);
+			}
+		}
+		if(Index >= ENTITY_OFFSET)
+		{
+			m_pController->OnEntity(Index - ENTITY_OFFSET, X, Y, Layer, Flags, false);
+		}
 	}
 
 	CNetMsg_Sv_ModifyTile Msg;
@@ -5237,7 +5256,7 @@ bool CGameContext::IsTileRectInsideLayer(int Layer, int X, int Y, int Width, int
 	return true;
 }
 
-bool CGameContext::ApplyTileRectangleFill(int Layer, int X, int Y, int Width, int Height, int Index, int Flags)
+bool CGameContext::ApplyTileRectangleFill(int Layer, int X, int Y, int Width, int Height, int Index, int Flags, bool Destructive)
 {
 	if(!IsTileRectInsideLayer(Layer, X, Y, Width, Height))
 	{
@@ -5249,7 +5268,7 @@ bool CGameContext::ApplyTileRectangleFill(int Layer, int X, int Y, int Width, in
 	{
 		for(int Column = 0; Column < Width; ++Column)
 		{
-			Modified |= ApplyTileModification(Layer, X + Column, Y + Row, Index, Flags);
+			Modified |= ApplyTileModification(Layer, X + Column, Y + Row, Index, Flags, Destructive);
 		}
 	}
 	return Modified;
@@ -5300,9 +5319,9 @@ bool CGameContext::ApplyTilePattern(int Layer, int X, int Y, int Width, int Heig
 			}
 			if(Destructive && Layer == LAYER_GAME && Index == TILE_AIR)
 			{
-				Modified = ApplyTileModification(LAYER_FRONT, X + Column, Y + Row, TILE_AIR, 0) || Modified;
+				Modified = ApplyTileModification(LAYER_FRONT, X + Column, Y + Row, TILE_AIR, 0, true) || Modified;
 			}
-			Modified |= ApplyTileModification(Layer, X + Column, Y + Row, Index, Flags);
+			Modified |= ApplyTileModification(Layer, X + Column, Y + Row, Index, Flags, Destructive);
 		}
 	}
 	return Modified;
@@ -5460,8 +5479,7 @@ void CGameContext::TestLiveTileModification()
 	{
 		const int X = m_Prng.RandomBits() % pGameLayer->m_Width;
 		const int Y = m_Prng.RandomBits() % pGameLayer->m_Height;
-		Modified = ApplyTileModification(LAYER_GAME, X, Y, TILE_NOHOOK, 0);
-	}
+					Modified = ApplyTileModification(LAYER_GAME, X, Y, TILE_NOHOOK, 0, true);	}
 
 	m_LastLiveTileTestTick = Now;
 	if(!Modified)

@@ -366,8 +366,8 @@ public:
 	void OnPostGlobalSnap() override;
 
 	void UpdatePlayerMaps();
-	bool ApplyTileModification(int Layer, int X, int Y, int Index, int Flags);
-	bool ApplyTileRectangleFill(int Layer, int X, int Y, int Width, int Height, int Index, int Flags);
+	bool ApplyTileModification(int Layer, int X, int Y, int Index, int Flags, bool Destructive);
+	bool ApplyTileRectangleFill(int Layer, int X, int Y, int Width, int Height, int Index, int Flags, bool Destructive);
 	bool ApplyTilePattern(int Layer, int X, int Y, int Width, int Height, const unsigned char *pTileBytes, size_t ByteCount, bool Destructive);
 	bool ApplyTeleTilePattern(int X, int Y, int Width, int Height, const unsigned char *pTileBytes, size_t ByteCount, bool Destructive);
 	bool ApplyTeleTileModification(int X, int Y, int Index, int Flags, int Number);
