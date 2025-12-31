@@ -116,8 +116,20 @@ void CPickup::Tick()
 				break;
 
 			case POWERUP_WEAPON:
-				if(m_Subtype >= 0 && m_Subtype < NUM_WEAPONS && (!pChr->GetWeaponGot(m_Subtype) || pChr->GetWeaponAmmo(m_Subtype) != -1))
-					pChr->GiveWeapon(m_Subtype);
+
+				if(GameWorld()->m_WorldConfig.m_IsDDRace && GameWorld()->m_WorldConfig.m_PredictDDRace)
+				{
+					if(m_Subtype >= 0 && m_Subtype < NUM_WEAPONS && (!pChr->GetWeaponGot(m_Subtype) || pChr->GetWeaponAmmo(m_Subtype) != m_Delay))
+					{
+						pChr->GiveWeapon(m_Subtype);
+						pChr->SetWeaponAmmo(m_Subtype, m_Delay);
+					}
+				}
+				else
+				{
+					if(m_Subtype >= 0 && m_Subtype < NUM_WEAPONS && (!pChr->GetWeaponGot(m_Subtype) || pChr->GetWeaponAmmo(m_Subtype) != -1))
+						pChr->GiveWeapon(m_Subtype);
+				}
 				break;
 
 			case POWERUP_NINJA:
@@ -158,6 +170,7 @@ CPickup::CPickup(CGameWorld *pGameWorld, int Id, const CPickupData *pPickup) :
 	m_Number = pPickup->m_SwitchNumber;
 	m_Layer = m_Number > 0 ? LAYER_SWITCH : LAYER_GAME;
 	m_Flags = pPickup->m_Flags;
+	m_Delay = pPickup->m_SwitchDelay;
 }
 
 void CPickup::FillInfo(CNetObj_Pickup *pPickup)

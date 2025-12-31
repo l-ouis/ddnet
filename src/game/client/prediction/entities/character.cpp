@@ -463,6 +463,18 @@ void CCharacter::FireWeapon()
 
 		m_ReloadTimer = FireDelay * GameWorld()->GameTickSpeed() / 1000;
 	}
+
+	if(GameWorld()->m_WorldConfig.m_IsDDRace && m_Core.m_aWeapons[m_Core.m_ActiveWeapon].m_Ammo > 0)
+	{
+		m_Core.m_aWeapons[m_Core.m_ActiveWeapon].m_Ammo--;
+
+		if(m_Core.m_aWeapons[m_Core.m_ActiveWeapon].m_Ammo == 0)
+		{
+			SetWeaponGot(m_Core.m_ActiveWeapon, false);
+			SetLastWeapon(WEAPON_GUN);
+			SetActiveWeapon(WEAPON_HAMMER);
+		}
+	}
 }
 
 void CCharacter::HandleWeapons()
