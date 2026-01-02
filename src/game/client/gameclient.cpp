@@ -2959,7 +2959,7 @@ void CGameClient::OnPredict()
 	};
 
 	const int LocalDummyIdx = DummyIndexFromClientId(m_Snap.m_LocalClientId);
-	const int DummyDummyIdx = DummyIndexFromClientId(m_PredictedDummyId);
+	const int DummyDummyIdx = DummyIndexFromClientId(m_aLocalIds[!g_Config.m_ClDummy]);
 	const bool LocalEditorSpec = LocalDummyIdx >= 0 && EditorSpecActive(LocalDummyIdx);
 	const bool DummyEditorSpec = DummyDummyIdx >= 0 && EditorSpecActive(DummyDummyIdx);
 	const auto ApplyEditorSpecLock = [&](CCharacter *pChar, int DummyIdx, bool ActiveFlag) {

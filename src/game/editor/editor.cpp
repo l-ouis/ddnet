@@ -7539,6 +7539,8 @@ void CEditor::ApplyClientTileState()
 					continue;
 				}
 				Existing = Incoming;
+				Existing.m_Skip = 0;
+				Existing.m_Reserved = 0;
 				Modified = true;
 			}
 			if(Modified)
@@ -7549,6 +7551,11 @@ void CEditor::ApplyClientTileState()
 		}
 
 		mem_copy(pEditorLayer->m_pTiles, pClientTiles, TileCount * sizeof(CTile));
+		for(size_t i = 0; i < TileCount; ++i)
+		{
+			pEditorLayer->m_pTiles[i].m_Skip = 0;
+			pEditorLayer->m_pTiles[i].m_Reserved = 0;
+		}
 		pEditorLayer->FlagModified(0, 0, pEditorLayer->m_Width, pEditorLayer->m_Height);
 	};
 
