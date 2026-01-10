@@ -781,6 +781,17 @@ void CGameClient::OnReset()
 
 	std::fill(std::begin(m_aLastPos), std::end(m_aLastPos), vec2(0.0f, 0.0f));
 	std::fill(std::begin(m_aLastActive), std::end(m_aLastActive), false);
+	std::fill(std::begin(m_aLastServerPos), std::end(m_aLastServerPos), vec2(0.0f, 0.0f));
+	std::fill(std::begin(m_aLastServerActive), std::end(m_aLastServerActive), false);
+
+	// Reset death markers
+	for(int i = 0; i < MAX_DEATH_MARKERS; i++)
+	{
+		m_aDeathMarkers[i].m_Pos = vec2(0.0f, 0.0f);
+		m_aDeathMarkers[i].m_Active = false;
+	}
+	m_DeathMarkerCount = 0;
+	m_DeathMarkerWriteIndex = 0;
 
 	m_GameOver = false;
 	m_GamePaused = false;
@@ -1805,6 +1816,23 @@ void CGameClient::ProcessEvents()
 		{
 			const CNetEvent_Death *pEvent = (const CNetEvent_Death *)Item.m_pData;
 			m_Effects.PlayerDeath(vec2(pEvent->m_X, pEvent->m_Y), pEvent->m_ClientId, Alpha);
+
+			// Record local death markers using server authoritative position (handles self-kill)
+			if(g_Config.m_ClShowDeathPoints)
+			{
+				for(int DummyIndex = 0; DummyIndex < NUM_DUMMIES; ++DummyIndex)
+				{
+					if(pEvent->m_ClientId == m_aLocalIds[DummyIndex])
+					{
+						m_aDeathMarkers[m_DeathMarkerWriteIndex].m_Pos = vec2(pEvent->m_X, pEvent->m_Y);
+						m_aDeathMarkers[m_DeathMarkerWriteIndex].m_Active = true;
+						m_DeathMarkerWriteIndex = (m_DeathMarkerWriteIndex + 1) % MAX_DEATH_MARKERS;
+						if(m_DeathMarkerCount < MAX_DEATH_MARKERS)
+							m_DeathMarkerCount++;
+						break;
+					}
+				}
+			}
 		}
 		else if(Item.m_Type == NETEVENTTYPE_SOUNDWORLD)
 		{
@@ -2711,6 +2739,29 @@ void CGameClient::OnNewSnapshot()
 	for(auto &pComponent : m_vpAll)
 		pComponent->OnNewSnapshot();
 
+	// Track server-authoritative positions for death markers
+	const int LocalId = m_Snap.m_LocalClientId;
+	for(int i = 0; i < MAX_CLIENTS; i++)
+	{
+		if(m_Snap.m_aCharacters[i].m_Active)
+		{
+			m_aLastServerPos[i] = vec2(m_Snap.m_aCharacters[i].m_Cur.m_X, m_Snap.m_aCharacters[i].m_Cur.m_Y);
+			m_aLastServerActive[i] = true;
+		}
+		else
+		{
+			if(m_aLastServerActive[i] && i == LocalId && g_Config.m_ClShowDeathPoints)
+			{
+				m_aDeathMarkers[m_DeathMarkerWriteIndex].m_Pos = m_aLastServerPos[i];
+				m_aDeathMarkers[m_DeathMarkerWriteIndex].m_Active = true;
+				m_DeathMarkerWriteIndex = (m_DeathMarkerWriteIndex + 1) % MAX_DEATH_MARKERS;
+				if(m_DeathMarkerCount < MAX_DEATH_MARKERS)
+					m_DeathMarkerCount++;
+			}
+			m_aLastServerActive[i] = false;
+		}
+	}
+
 	// notify editor when local character moved
 	UpdateEditorIngameMoved();
 
@@ -3169,7 +3220,9 @@ void CGameClient::OnPredict()
 			m_aLastActive[i] = true;
 		}
 		else
+		{
 			m_aLastActive[i] = false;
+		}
 	}
 
 	if(g_Config.m_Debug && g_Config.m_ClPredict && m_PredictedTick == Client()->PredGameTick(g_Config.m_ClDummy))
@@ -3415,6 +3468,11 @@ void CGameClient::CClientData::Reset()
 	std::fill(std::begin(m_aPredTick), std::end(m_aPredTick), 0);
 	m_SpecCharPresent = false;
 	m_SpecChar = vec2(0.0f, 0.0f);
+
+	// Reset trail tracking
+	std::fill(std::begin(m_aTrailPositions), std::end(m_aTrailPositions), STrailPosition{vec2(0.0f, 0.0f), -1});
+	m_TrailPositionCount = 0;
+	m_TrailWriteIndex = 0;
 
 	for(auto &Info : m_aSixup)
 		Info.Reset();

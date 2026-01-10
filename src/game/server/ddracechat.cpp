@@ -1936,6 +1936,76 @@ void CGameContext::ConTeleCursor(IConsole::IResult *pResult, void *pUserData)
 	pPlayer->m_LastTeleTee.Save(pChr);
 }
 
+void CGameContext::ConSummon(IConsole::IResult *pResult, void *pUserData)
+{
+	CGameContext *pSelf = (CGameContext *)pUserData;
+	if(!CheckClientId(pResult->m_ClientId))
+		return;
+	CPlayer *pPlayer = pSelf->m_apPlayers[pResult->m_ClientId];
+	if(!pPlayer)
+		return;
+	CCharacter *pChr = pPlayer->GetCharacter();
+	if(!pChr)
+		return;
+
+	CGameTeams &Teams = pSelf->m_pController->Teams();
+	int Team = pSelf->GetDDRaceTeam(pResult->m_ClientId);
+	if(!Teams.IsPractice(Team))
+	{
+		pSelf->SendChatTarget(pPlayer->GetCid(), "You're not in a team with /practice turned on. Note that you can't earn a rank with practice enabled.");
+		return;
+	}
+
+	if(pResult->NumArguments() == 0)
+	{
+		pSelf->SendChatTarget(pPlayer->GetCid(), "Usage: /summon <player name>");
+		return;
+	}
+
+	// Find the target player by name
+	int TargetClientId = -1;
+	for(int i = 0; i < MAX_CLIENTS; i++)
+	{
+		if(str_comp(pResult->GetString(0), pSelf->Server()->ClientName(i)) == 0)
+		{
+			TargetClientId = i;
+			break;
+		}
+	}
+
+	if(TargetClientId == -1)
+	{
+		pSelf->SendChatTarget(pPlayer->GetCid(), "No player with this name found.");
+		return;
+	}
+
+	CPlayer *pTargetPlayer = pSelf->m_apPlayers[TargetClientId];
+	if(!pTargetPlayer)
+		return;
+
+	CCharacter *pTargetChr = pTargetPlayer->GetCharacter();
+	if(!pTargetChr)
+	{
+		pSelf->SendChatTarget(pPlayer->GetCid(), "Target player has no character.");
+		return;
+	}
+
+	// Calculate cursor position with zoom scaling
+	vec2 Target = vec2(pChr->Core()->m_Input.m_TargetX, pChr->Core()->m_Input.m_TargetY);
+	vec2 SummonPos = pPlayer->m_CameraInfo.ConvertTargetToWorld(pChr->GetPos(), Target);
+
+	// Teleport the target player to the summoner's cursor
+	pSelf->Teleport(pTargetChr, SummonPos);
+	pTargetChr->ResetJumps();
+	pTargetChr->UnFreeze();
+	pTargetChr->ResetVelocity();
+	pTargetPlayer->m_LastTeleTee.Save(pTargetChr);
+
+	char aBuf[128];
+	str_format(aBuf, sizeof(aBuf), "Summoned '%s' to your cursor.", pSelf->Server()->ClientName(TargetClientId));
+	pSelf->SendChatTarget(pPlayer->GetCid(), aBuf);
+}
+
 void CGameContext::ConLastTele(IConsole::IResult *pResult, void *pUserData)
 {
 	CGameContext *pSelf = (CGameContext *)pUserData;

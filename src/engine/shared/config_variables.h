@@ -723,6 +723,12 @@ MACRO_CONFIG_INT(ClHookCollSize, cl_hook_coll_size, 0, 0, 20, CFGFLAG_CLIENT | C
 MACRO_CONFIG_INT(ClHookCollSizeOther, cl_hook_coll_size_other, 0, 0, 20, CFGFLAG_CLIENT | CFGFLAG_SAVE, "Width of others' hook collision line")
 MACRO_CONFIG_INT(ClHookCollAlpha, cl_hook_coll_alpha, 100, 0, 100, CFGFLAG_CLIENT | CFGFLAG_SAVE, "Alpha of hook collision line (0 invisible, 100 fully visible)")
 
+MACRO_CONFIG_INT(ClTrackLength, cl_track_length, 100, 0, 500, CFGFLAG_CLIENT | CFGFLAG_SAVE, "Number of position samples to track per player (max 500)")
+MACRO_CONFIG_INT(ClDisplayTrack, cl_display_track, 0, 0, 1, CFGFLAG_CLIENT | CFGFLAG_SAVE, "Display position trails for all visible players")
+MACRO_CONFIG_INT(ClTrackAlpha, cl_track_alpha, 100, 0, 100, CFGFLAG_CLIENT | CFGFLAG_SAVE, "Maximum alpha/opacity of trails (0-100)")
+
+MACRO_CONFIG_INT(ClShowDeathPoints, cl_show_death_points, 0, 0, 1, CFGFLAG_CLIENT | CFGFLAG_SAVE, "Show red X markers at your last 50 death positions")
+
 MACRO_CONFIG_COL(ClHookCollColorNoColl, cl_hook_coll_color_no_coll, 65407, CFGFLAG_CLIENT | CFGFLAG_SAVE, "Specifies the color of a hookline that hits nothing.")
 MACRO_CONFIG_COL(ClHookCollColorHookableColl, cl_hook_coll_color_hookable_coll, 6401973, CFGFLAG_CLIENT | CFGFLAG_SAVE, "Specifies the color of a hookline that hits hookable tiles.")
 MACRO_CONFIG_COL(ClHookCollColorTeeColl, cl_hook_coll_color_tee_coll, 2817919, CFGFLAG_CLIENT | CFGFLAG_SAVE, "Specifies the color of a hookline that hits tees.")

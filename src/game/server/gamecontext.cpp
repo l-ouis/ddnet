@@ -4599,6 +4599,7 @@ void CGameContext::RegisterChatCommands()
 	Console()->Register("lasttp", "", CFGFLAG_CHAT | CFGFLAG_SERVER | CMDFLAG_PRACTICE, ConLastTele, this, "Teleport yourself to the last location you teleported to");
 	Console()->Register("tc", "?r[player name]", CFGFLAG_CHAT | CFGFLAG_SERVER | CMDFLAG_PRACTICE, ConTeleCursor, this, "Teleport yourself to player or to where you are spectating/or looking if no player name is given");
 	Console()->Register("telecursor", "?r[player name]", CFGFLAG_CHAT | CFGFLAG_SERVER | CMDFLAG_PRACTICE, ConTeleCursor, this, "Teleport yourself to player or to where you are spectating/or looking if no player name is given");
+	Console()->Register("summon", "r[player name]", CFGFLAG_CHAT | CFGFLAG_SERVER | CMDFLAG_PRACTICE, ConSummon, this, "Teleport the specified player to your cursor position (scaled for zoom)");
 	Console()->Register("totele", "i[number]", CFGFLAG_CHAT | CMDFLAG_PRACTICE, ConPracticeToTeleporter, this, "Teleports you to teleporter i");
 	Console()->Register("totelecp", "i[number]", CFGFLAG_CHAT | CMDFLAG_PRACTICE, ConPracticeToCheckTeleporter, this, "Teleports you to checkpoint teleporter i");
 	Console()->Register("unsolo", "", CFGFLAG_CHAT | CMDFLAG_PRACTICE, ConPracticeUnSolo, this, "Puts you out of solo part");

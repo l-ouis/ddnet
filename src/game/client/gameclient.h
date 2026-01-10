@@ -277,6 +277,10 @@ private:
 	vec2 m_aLastPos[MAX_CLIENTS];
 	bool m_aLastActive[MAX_CLIENTS];
 
+	// server authoritative positions for death markers
+	vec2 m_aLastServerPos[MAX_CLIENTS];
+	bool m_aLastServerActive[MAX_CLIENTS];
+
 	// only used in OnNewSnapshot
 	bool m_GameOver = false;
 	bool m_GamePaused = false;
@@ -615,6 +619,16 @@ public:
 		bool m_SpecCharPresent;
 		vec2 m_SpecChar;
 
+		// Position trail tracking
+		struct STrailPosition
+		{
+			vec2 m_Pos;
+			int m_Tick;
+		};
+		STrailPosition m_aTrailPositions[500]; // Circular buffer for position trails
+		int m_TrailPositionCount; // Number of valid positions stored
+		int m_TrailWriteIndex; // Next write position (circular buffer head)
+
 		void UpdateSkinInfo();
 		void UpdateSkin7HatSprite(int Dummy);
 		void UpdateSkin7BotDecoration(int Dummy);
@@ -678,6 +692,17 @@ public:
 	};
 
 	CClientStats m_aStats[MAX_CLIENTS];
+
+	// Death markers
+	struct SDeathMarker
+	{
+		vec2 m_Pos;
+		bool m_Active;
+	};
+	static constexpr int MAX_DEATH_MARKERS = 50;
+	SDeathMarker m_aDeathMarkers[MAX_DEATH_MARKERS];
+	int m_DeathMarkerCount;
+	int m_DeathMarkerWriteIndex;
 
 	CRenderTools m_RenderTools;
 	CRenderMap m_RenderMap;

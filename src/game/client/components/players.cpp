@@ -452,6 +452,128 @@ void CPlayers::RenderHookCollLine(
 	}
 }
 
+void CPlayers::RenderTrail(int ClientId, const CTeeRenderInfo *pRenderInfo)
+{
+	const CGameClient::CClientData *pClient = &GameClient()->m_aClients[ClientId];
+
+	// Calculate how many positions to render
+	const int TrackLength = minimum(g_Config.m_ClTrackLength, pClient->m_TrailPositionCount);
+	if(TrackLength < 2) // Need at least 2 points for a line
+		return;
+
+	// Build thick line quads
+	std::vector<IGraphics::CFreeformItem> vLineQuadSegments;
+	vLineQuadSegments.reserve(TrackLength - 1);
+
+	const int ReadStartIndex = (pClient->m_TrailWriteIndex - TrackLength + 500) % 500;
+
+	// Color based on player's skin
+	ColorRGBA TrailColor = pRenderInfo->m_ColorBody;
+
+	// Line width for thick trails
+	const float LineWidth = 2.0f;
+
+	// Build thick line segments from oldest to newest
+	for(int i = 0; i < TrackLength - 1; i++)
+	{
+		int Index0 = (ReadStartIndex + i) % 500;
+		int Index1 = (ReadStartIndex + i + 1) % 500;
+
+		const vec2 &Pos0 = pClient->m_aTrailPositions[Index0].m_Pos;
+		const vec2 &Pos1 = pClient->m_aTrailPositions[Index1].m_Pos;
+
+		// Calculate perpendicular vector for line thickness
+		vec2 Direction = Pos1 - Pos0;
+		float Length = length(Direction);
+		if(Length < 0.001f)
+			continue;
+
+		vec2 PerpToAngle = normalize(vec2(Direction.y, -Direction.x));
+
+		// Create quad for thick line segment
+		vec2 QuadPos0 = Pos1 + PerpToAngle * -LineWidth;
+		vec2 QuadPos1 = Pos1 + PerpToAngle * LineWidth;
+		vec2 QuadPos2 = Pos0 + PerpToAngle * -LineWidth;
+		vec2 QuadPos3 = Pos0 + PerpToAngle * LineWidth;
+
+		vLineQuadSegments.emplace_back(QuadPos0.x, QuadPos0.y, QuadPos1.x, QuadPos1.y, QuadPos2.x, QuadPos2.y, QuadPos3.x, QuadPos3.y);
+	}
+
+	if(vLineQuadSegments.empty())
+		return;
+
+	// Render with fading alpha
+	float BaseAlpha = GameClient()->IsOtherTeam(ClientId) ? g_Config.m_ClShowOthersAlpha / 100.0f : 1.0f;
+	BaseAlpha *= g_Config.m_ClTrackAlpha / 100.0f;
+
+	Graphics()->TextureClear();
+	Graphics()->QuadsBegin();
+
+	// Render each segment with age-based fading
+	for(int i = 0; i < (int)vLineQuadSegments.size(); i++)
+	{
+		// Calculate alpha based on position in trail (newer = more opaque)
+		float SegmentProgress = (float)i / (float)(vLineQuadSegments.size() - 1);
+		float SegmentAlpha = BaseAlpha * SegmentProgress; // Oldest = 0, Newest = BaseAlpha
+
+		Graphics()->SetColor(TrailColor.WithAlpha(SegmentAlpha));
+		Graphics()->QuadsDrawFreeform(&vLineQuadSegments[i], 1);
+	}
+
+	Graphics()->QuadsEnd();
+}
+
+void CPlayers::RenderDeathMarkers()
+{
+	if(!g_Config.m_ClShowDeathPoints)
+		return;
+
+	// Render each active death marker
+	for(int i = 0; i < GameClient()->MAX_DEATH_MARKERS; i++)
+	{
+		if(!GameClient()->m_aDeathMarkers[i].m_Active)
+			continue;
+
+		vec2 Pos = GameClient()->m_aDeathMarkers[i].m_Pos;
+
+		// Render small red X centered on the death position with thicker strokes
+		Graphics()->TextureClear();
+		Graphics()->QuadsBegin();
+		Graphics()->SetColor(1.0f, 0.0f, 0.0f, 0.9f);
+
+		const float HalfSize = 6.0f;
+		const float HalfThickness = 2.0f;
+
+		auto MakeThickSegment = [this](const vec2 &From, const vec2 &To, float HalfW) {
+			vec2 Dir = To - From;
+			float Len = length(Dir);
+			if(Len <= 0.0001f)
+			{
+				vec2 Offset(HalfW, 0.0f);
+				return IGraphics::CFreeformItem(From.x - Offset.x, From.y - Offset.y, From.x + Offset.x, From.y - Offset.y, From.x - Offset.x, From.y + Offset.y, From.x + Offset.x, From.y + Offset.y);
+			}
+			Dir *= 1.0f / Len;
+			vec2 Perp(-Dir.y * HalfW, Dir.x * HalfW);
+			vec2 P0 = To + Perp;
+			vec2 P1 = To - Perp;
+			vec2 P2 = From + Perp;
+			vec2 P3 = From - Perp;
+			return IGraphics::CFreeformItem(P0.x, P0.y, P1.x, P1.y, P2.x, P2.y, P3.x, P3.y);
+		};
+
+		vec2 A = Pos + vec2(-HalfSize, -HalfSize);
+		vec2 B = Pos + vec2(HalfSize, HalfSize);
+		vec2 C = Pos + vec2(-HalfSize, HalfSize);
+		vec2 D = Pos + vec2(HalfSize, -HalfSize);
+
+		IGraphics::CFreeformItem aQuads[2] = {
+			MakeThickSegment(A, B, HalfThickness),
+			MakeThickSegment(C, D, HalfThickness)};
+		Graphics()->QuadsDrawFreeform(aQuads, 2);
+		Graphics()->QuadsEnd();
+	}
+}
+
 void CPlayers::RenderHook(
 	const CNetObj_Character *pPrevChar,
 	const CNetObj_Character *pPlayerChar,
@@ -1008,6 +1130,50 @@ void CPlayers::OnRender()
 
 	// render everyone else's tee, then either our own or the tee we are spectating.
 	const int RenderLastId = (GameClient()->m_Snap.m_SpecInfo.m_SpectatorId != SPEC_FREEVIEW && GameClient()->m_Snap.m_SpecInfo.m_Active) ? GameClient()->m_Snap.m_SpecInfo.m_SpectatorId : LocalClientId;
+
+	// Track render positions for trails (if enabled)
+	if(g_Config.m_ClDisplayTrack && g_Config.m_ClTrackLength > 0)
+	{
+		for(int ClientId = 0; ClientId < MAX_CLIENTS; ClientId++)
+		{
+			if(!IsPlayerInfoAvailable(ClientId))
+				continue;
+
+			CGameClient::CClientData *pClient = &GameClient()->m_aClients[ClientId];
+
+			// Store current render position in circular buffer
+			pClient->m_aTrailPositions[pClient->m_TrailWriteIndex].m_Pos = pClient->m_RenderPos;
+			pClient->m_aTrailPositions[pClient->m_TrailWriteIndex].m_Tick = Client()->GameTick(g_Config.m_ClDummy);
+
+			// Advance write index (circular)
+			pClient->m_TrailWriteIndex = (pClient->m_TrailWriteIndex + 1) % 500;
+
+			// Track count (max at buffer size)
+			if(pClient->m_TrailPositionCount < 500)
+				pClient->m_TrailPositionCount++;
+		}
+	}
+
+	// Render position trails (BEFORE tees so they appear behind)
+	if(g_Config.m_ClDisplayTrack && g_Config.m_ClTrackLength > 0)
+	{
+		// Render trails for all players except the last one
+		for(int ClientId = 0; ClientId < MAX_CLIENTS; ClientId++)
+		{
+			if(ClientId == RenderLastId || !IsPlayerInfoAvailable(ClientId))
+				continue;
+			RenderTrail(ClientId, &aRenderInfo[ClientId]);
+		}
+
+		// Render trail for the last player (local or spectated)
+		if(RenderLastId != -1 && IsPlayerInfoAvailable(RenderLastId))
+		{
+			RenderTrail(RenderLastId, &aRenderInfo[RenderLastId]);
+		}
+	}
+
+	// Render death markers
+	RenderDeathMarkers();
 
 	for(int ClientId = 0; ClientId < MAX_CLIENTS; ClientId++)
 	{

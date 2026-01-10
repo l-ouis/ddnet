@@ -31,6 +31,8 @@ class CPlayers : public CComponent
 		const CNetObj_Character *pPrevChar,
 		const CNetObj_Character *pPlayerChar,
 		int ClientId);
+	void RenderTrail(int ClientId, const CTeeRenderInfo *pRenderInfo);
+	void RenderDeathMarkers();
 	bool IsPlayerInfoAvailable(int ClientId) const;
 
 	int m_WeaponEmoteQuadContainerIndex;
