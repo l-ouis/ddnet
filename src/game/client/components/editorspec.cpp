@@ -3,9 +3,10 @@
 
 #include <base/color.h>
 #include <base/math.h>
-#include <base/system.h>
+#include <base/str.h>
 
 #include <engine/console.h>
+#include <engine/font_icons.h>
 #include <engine/graphics.h>
 #include <engine/map.h>
 #include <engine/storage.h>
@@ -2311,10 +2312,10 @@ void CEditorSpec::OnRender()
 		TextRender()->TextOutlineColor(ColorRGBA(0.0f, 0.0f, 0.0f, 0.3f));
 		const float IconFontSize = PrimaryButtonSize.y * 0.55f;
 		TextRender()->SetFontPreset(EFontPreset::ICON_FONT);
-		const float IconWidth = TextRender()->TextWidth(IconFontSize, FontIcons::FONT_ICON_PEN_TO_SQUARE);
+		const float IconWidth = TextRender()->TextWidth(IconFontSize, FontIcon::PEN_TO_SQUARE);
 		const float IconX = PrimaryButtonPos.x + (PrimaryButtonSize.x - IconWidth) * 0.5f;
 		const float IconY = PrimaryButtonPos.y + (PrimaryButtonSize.y - IconFontSize) * 0.5f;
-		TextRender()->Text(IconX, IconY, IconFontSize, FontIcons::FONT_ICON_PEN_TO_SQUARE);
+		TextRender()->Text(IconX, IconY, IconFontSize, FontIcon::PEN_TO_SQUARE);
 		TextRender()->SetFontPreset(EFontPreset::DEFAULT_FONT);
 
 		const vec2 DrawButtonPos = ToolPaletteSecondaryButtonPos(State.m_ToolPalettePos);
@@ -2392,7 +2393,7 @@ void CEditorSpec::OnRender()
 		const float ChevronSize = 13.0f;
 		const float ChevronX = DropdownPos.x + DropdownSize.x - 18.0f;
 		const float ChevronY = DropdownPos.y + (DropdownSize.y - ChevronSize) * 0.5f;
-		TextRender()->Text(ChevronX, ChevronY, ChevronSize, FontIcons::FONT_ICON_CHEVRON_DOWN);
+		TextRender()->Text(ChevronX, ChevronY, ChevronSize, FontIcon::CHEVRON_DOWN);
 		TextRender()->SetFontPreset(EFontPreset::DEFAULT_FONT);
 		TextRender()->TextColor(TextRender()->DefaultTextColor());
 		TextRender()->TextOutlineColor(TextRender()->DefaultTextOutlineColor());
@@ -2460,8 +2461,8 @@ void CEditorSpec::OnRender()
 			TextRender()->Text(IconXPos, IconYPos, IconSize, pIcon);
 			TextRender()->SetFontPreset(EFontPreset::DEFAULT_FONT);
 		};
-		RenderTeleButton(MinusPos, MinusHover, FontIcons::FONT_ICON_MINUS);
-		RenderTeleButton(PlusPos, PlusHover, FontIcons::FONT_ICON_PLUS);
+		RenderTeleButton(MinusPos, MinusHover, FontIcon::MINUS);
+		RenderTeleButton(PlusPos, PlusHover, FontIcon::PLUS);
 		ColorRGBA InputColor;
 		if(State.m_TeleInputEditing)
 			InputColor = ColorRGBA(0.2f, 0.45f, 0.85f, 0.95f);

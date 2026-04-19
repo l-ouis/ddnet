@@ -1997,7 +1997,7 @@ void CGameContext::ConSummon(IConsole::IResult *pResult, void *pUserData)
 	// Teleport the target player to the summoner's cursor
 	pSelf->Teleport(pTargetChr, SummonPos);
 	pTargetChr->ResetJumps();
-	pTargetChr->UnFreeze();
+	pTargetChr->Unfreeze();
 	pTargetChr->ResetVelocity();
 	pTargetPlayer->m_LastTeleTee.Save(pTargetChr);
 
