@@ -4,9 +4,6 @@
 
 #include "chat.h"
 
-#include <algorithm>
-#include <cmath>
-
 #include <engine/graphics.h>
 #include <engine/shared/config.h>
 
@@ -16,6 +13,9 @@
 #include <game/client/gameclient.h>
 #include <game/client/ui.h>
 #include <game/mapitems.h>
+
+#include <algorithm>
+#include <cmath>
 
 CEmoticon::CEmoticon()
 {

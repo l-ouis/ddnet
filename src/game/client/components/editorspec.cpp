@@ -9,9 +9,9 @@
 #include <engine/font_icons.h>
 #include <engine/graphics.h>
 #include <engine/map.h>
+#include <engine/shared/config.h>
 #include <engine/storage.h>
 #include <engine/textrender.h>
-#include <engine/shared/config.h>
 
 #include <generated/client_data.h>
 #include <generated/protocol.h>
@@ -21,8 +21,8 @@
 #include <game/client/gameclient.h>
 #include <game/gamecore.h>
 #include <game/layers.h>
-#include <game/mapitems.h>
 #include <game/map/render_map.h>
+#include <game/mapitems.h>
 
 #include <algorithm>
 #include <cmath>
@@ -30,302 +30,302 @@
 
 namespace
 {
-constexpr float TOOL_PALETTE_WIDTH = 720.0f;
-constexpr float TOOL_PALETTE_HEIGHT = 54.0f;
-constexpr float TOOL_PALETTE_ROUNDING = 10.0f;
-constexpr float TOOL_PALETTE_HANDLE_SIZE = TOOL_PALETTE_HEIGHT;
-constexpr float TOOL_PALETTE_PADDING = 12.0f;
-constexpr float TOOL_BUTTON_WIDTH = 120.0f;
-constexpr float TOOL_BUTTON_HEIGHT = 38.0f;
-constexpr float TOOL_BUTTON_ROUNDING = 8.0f;
-constexpr float TOOL_BUTTON_GAP = 14.0f;
-constexpr float TOOL_TOGGLE_WIDTH = 104.0f;
-constexpr float TOOL_TOGGLE_HEIGHT = 32.0f;
-constexpr float TOOL_TOGGLE_GAP = 10.0f;
-constexpr float LAYER_DROPDOWN_WIDTH = 110.0f;
-constexpr float LAYER_DROPDOWN_HEIGHT = 32.0f;
-constexpr float LAYER_DROPDOWN_OPTION_SPACING = 6.0f;
-constexpr float LAYER_DROPDOWN_ROUNDING = 8.0f;
-constexpr int PRIMARY_TOOL_PAINTBRUSH = 0;
-constexpr int PRIMARY_TOOL_DRAW = 1;
-constexpr float TELE_MENU_VERTICAL_GAP = 8.0f;
-constexpr float TELE_MENU_HEIGHT = 46.0f;
-constexpr float TELE_MENU_ROUNDING = 8.0f;
-constexpr float TELE_MENU_PADDING = 12.0f;
-constexpr float TELE_NUMBER_BUTTON_WIDTH = 32.0f;
-constexpr float TELE_NUMBER_BUTTON_HEIGHT = 30.0f;
-constexpr float TELE_NUMBER_INPUT_WIDTH = 72.0f;
-constexpr float TELE_NUMBER_INPUT_HEIGHT = 30.0f;
-constexpr float TELE_NUMBER_ELEMENT_GAP = 8.0f;
-constexpr float TELE_MENU_CONTENT_WIDTH = TELE_NUMBER_BUTTON_WIDTH * 2.0f + TELE_NUMBER_INPUT_WIDTH + TELE_NUMBER_ELEMENT_GAP * 2.0f;
-constexpr float TELE_MENU_WIDTH = TELE_MENU_CONTENT_WIDTH + TELE_MENU_PADDING * 2.0f;
-constexpr float TELE_INPUT_TEXT_PADDING = 9.0f;
-constexpr float TELE_INPUT_HASH_GAP = 6.0f;
-constexpr int TELE_NUMBER_MIN = 1;
-constexpr int TELE_NUMBER_MAX = 256;
-constexpr int BRUSH_PICKER_COLS = 16;
-constexpr int BRUSH_PICKER_ROWS = 16;
-constexpr float BRUSH_PICKER_BASE_TILE_SIZE = 32.0f;
-constexpr int DRAW_SAMPLE_TICK_STEP = 2;
-constexpr int DRAW_SEGMENT_LIFETIME_SECONDS = 60;
-constexpr size_t MAX_STORED_DRAW_SEGMENTS = 1024;
-constexpr int MAX_DRAW_SEGMENTS_PER_PACKET = 32;
-constexpr size_t MAX_STORED_DRAW_TEXTS = 512;
-constexpr size_t MAX_DRAW_TEXT_LENGTH = 256;
-const ColorRGBA DRAW_DEFAULT_COLOR(0.3f, 0.1f, 0.1f, 1.0f);
-constexpr float DRAW_LINE_HALF_WIDTH = 2.0f;
+	constexpr float TOOL_PALETTE_WIDTH = 720.0f;
+	constexpr float TOOL_PALETTE_HEIGHT = 54.0f;
+	constexpr float TOOL_PALETTE_ROUNDING = 10.0f;
+	constexpr float TOOL_PALETTE_HANDLE_SIZE = TOOL_PALETTE_HEIGHT;
+	constexpr float TOOL_PALETTE_PADDING = 12.0f;
+	constexpr float TOOL_BUTTON_WIDTH = 120.0f;
+	constexpr float TOOL_BUTTON_HEIGHT = 38.0f;
+	constexpr float TOOL_BUTTON_ROUNDING = 8.0f;
+	constexpr float TOOL_BUTTON_GAP = 14.0f;
+	constexpr float TOOL_TOGGLE_WIDTH = 104.0f;
+	constexpr float TOOL_TOGGLE_HEIGHT = 32.0f;
+	constexpr float TOOL_TOGGLE_GAP = 10.0f;
+	constexpr float LAYER_DROPDOWN_WIDTH = 110.0f;
+	constexpr float LAYER_DROPDOWN_HEIGHT = 32.0f;
+	constexpr float LAYER_DROPDOWN_OPTION_SPACING = 6.0f;
+	constexpr float LAYER_DROPDOWN_ROUNDING = 8.0f;
+	constexpr int PRIMARY_TOOL_PAINTBRUSH = 0;
+	constexpr int PRIMARY_TOOL_DRAW = 1;
+	constexpr float TELE_MENU_VERTICAL_GAP = 8.0f;
+	constexpr float TELE_MENU_HEIGHT = 46.0f;
+	constexpr float TELE_MENU_ROUNDING = 8.0f;
+	constexpr float TELE_MENU_PADDING = 12.0f;
+	constexpr float TELE_NUMBER_BUTTON_WIDTH = 32.0f;
+	constexpr float TELE_NUMBER_BUTTON_HEIGHT = 30.0f;
+	constexpr float TELE_NUMBER_INPUT_WIDTH = 72.0f;
+	constexpr float TELE_NUMBER_INPUT_HEIGHT = 30.0f;
+	constexpr float TELE_NUMBER_ELEMENT_GAP = 8.0f;
+	constexpr float TELE_MENU_CONTENT_WIDTH = TELE_NUMBER_BUTTON_WIDTH * 2.0f + TELE_NUMBER_INPUT_WIDTH + TELE_NUMBER_ELEMENT_GAP * 2.0f;
+	constexpr float TELE_MENU_WIDTH = TELE_MENU_CONTENT_WIDTH + TELE_MENU_PADDING * 2.0f;
+	constexpr float TELE_INPUT_TEXT_PADDING = 9.0f;
+	constexpr float TELE_INPUT_HASH_GAP = 6.0f;
+	constexpr int TELE_NUMBER_MIN = 1;
+	constexpr int TELE_NUMBER_MAX = 256;
+	constexpr int BRUSH_PICKER_COLS = 16;
+	constexpr int BRUSH_PICKER_ROWS = 16;
+	constexpr float BRUSH_PICKER_BASE_TILE_SIZE = 32.0f;
+	constexpr int DRAW_SAMPLE_TICK_STEP = 2;
+	constexpr int DRAW_SEGMENT_LIFETIME_SECONDS = 60;
+	constexpr size_t MAX_STORED_DRAW_SEGMENTS = 1024;
+	constexpr int MAX_DRAW_SEGMENTS_PER_PACKET = 32;
+	constexpr size_t MAX_STORED_DRAW_TEXTS = 512;
+	constexpr size_t MAX_DRAW_TEXT_LENGTH = 256;
+	const ColorRGBA DRAW_DEFAULT_COLOR(0.3f, 0.1f, 0.1f, 1.0f);
+	constexpr float DRAW_LINE_HALF_WIDTH = 2.0f;
 
-bool PointInRect(const vec2 &Point, const vec2 &TopLeft, const vec2 &Size)
-{
-	return Point.x >= TopLeft.x && Point.x <= TopLeft.x + Size.x &&
-		Point.y >= TopLeft.y && Point.y <= TopLeft.y + Size.y;
-}
-
-vec2 ToolPaletteHandlePos(const vec2 &PalettePos)
-{
-	return PalettePos;
-}
-
-vec2 ToolPaletteHandleSize()
-{
-	return vec2(TOOL_PALETTE_HANDLE_SIZE, TOOL_PALETTE_HANDLE_SIZE);
-}
-
-vec2 ToolPalettePrimaryButtonPos(const vec2 &PalettePos)
-{
-	const float ButtonY = PalettePos.y + (TOOL_PALETTE_HEIGHT - TOOL_BUTTON_HEIGHT) * 0.5f;
-	return vec2(PalettePos.x + TOOL_PALETTE_HANDLE_SIZE + TOOL_PALETTE_PADDING, ButtonY);
-}
-
-vec2 ToolPalettePrimaryButtonSize()
-{
-	return vec2(TOOL_BUTTON_WIDTH, TOOL_BUTTON_HEIGHT);
-}
-
-vec2 ToolPaletteSecondaryButtonPos(const vec2 &PalettePos)
-{
-	vec2 Pos = ToolPalettePrimaryButtonPos(PalettePos);
-	Pos.x += TOOL_BUTTON_WIDTH + TOOL_BUTTON_GAP;
-	return Pos;
-}
-
-vec2 ToolPaletteShowDiffButtonPos(const vec2 &PalettePos)
-{
-	const float ButtonY = PalettePos.y + (TOOL_PALETTE_HEIGHT - TOOL_TOGGLE_HEIGHT) * 0.5f;
-	const float ButtonX = PalettePos.x + TOOL_PALETTE_WIDTH - TOOL_PALETTE_PADDING - TOOL_TOGGLE_WIDTH;
-	return vec2(ButtonX, ButtonY);
-}
-
-vec2 ToolPaletteShowDiffButtonSize()
-{
-	return vec2(TOOL_TOGGLE_WIDTH, TOOL_TOGGLE_HEIGHT);
-}
-
-vec2 ToolPaletteDestructiveButtonPos(const vec2 &PalettePos)
-{
-	vec2 Pos = ToolPaletteShowDiffButtonPos(PalettePos);
-	Pos.x -= TOOL_TOGGLE_WIDTH + TOOL_TOGGLE_GAP;
-	return Pos;
-}
-
-vec2 ToolPaletteDestructiveButtonSize()
-{
-	return vec2(TOOL_TOGGLE_WIDTH, TOOL_TOGGLE_HEIGHT);
-}
-
-vec2 ToolPaletteSize()
-{
-	return vec2(TOOL_PALETTE_WIDTH, TOOL_PALETTE_HEIGHT);
-}
-
-vec2 ToolPaletteLayerDropdownPos(const vec2 &PalettePos)
-{
-	const float DropdownY = PalettePos.y + (TOOL_PALETTE_HEIGHT - LAYER_DROPDOWN_HEIGHT) * 0.5f;
-	const float ToggleClusterWidth = TOOL_TOGGLE_WIDTH * 2.0f + TOOL_TOGGLE_GAP;
-	const float RightOffset = TOOL_PALETTE_PADDING + ToggleClusterWidth + TOOL_PALETTE_PADDING;
-	const float DropdownX = PalettePos.x + TOOL_PALETTE_WIDTH - RightOffset - LAYER_DROPDOWN_WIDTH;
-	return vec2(DropdownX, DropdownY);
-}
-
-vec2 ToolPaletteLayerDropdownSize()
-{
-	return vec2(LAYER_DROPDOWN_WIDTH, LAYER_DROPDOWN_HEIGHT);
-}
-
-vec2 LayerDropdownOptionsPos(const vec2 &DropdownPos)
-{
-	return DropdownPos + vec2(0.0f, LAYER_DROPDOWN_HEIGHT + LAYER_DROPDOWN_OPTION_SPACING);
-}
-
-vec2 LayerDropdownOptionSize()
-{
-	return vec2(LAYER_DROPDOWN_WIDTH, LAYER_DROPDOWN_HEIGHT);
-}
-
-vec2 TeleMenuSize()
-{
-	return vec2(TELE_MENU_WIDTH, TELE_MENU_HEIGHT);
-}
-
-vec2 TeleMenuPos(const vec2 &PalettePos)
-{
-	const vec2 DropdownPos = ToolPaletteLayerDropdownPos(PalettePos);
-	const vec2 DropdownSize = ToolPaletteLayerDropdownSize();
-	const vec2 MenuSize = TeleMenuSize();
-	const float CenterX = DropdownPos.x + DropdownSize.x * 0.5f;
-	const float MenuX = CenterX - MenuSize.x * 0.5f;
-	const float MenuY = PalettePos.y + TOOL_PALETTE_HEIGHT + TELE_MENU_VERTICAL_GAP;
-	return vec2(MenuX, MenuY);
-}
-
-vec2 TeleNumberRowPos(const vec2 &PalettePos)
-{
-	const vec2 MenuPos = TeleMenuPos(PalettePos);
-	const vec2 MenuSize = TeleMenuSize();
-	const float RowWidth = TELE_MENU_CONTENT_WIDTH;
-	const float RowX = MenuPos.x + (MenuSize.x - RowWidth) * 0.5f;
-	const float RowY = MenuPos.y + (TELE_MENU_HEIGHT - TELE_NUMBER_BUTTON_HEIGHT) * 0.5f;
-	return vec2(RowX, RowY);
-}
-
-vec2 TeleNumberMinusPos(const vec2 &PalettePos)
-{
-	return TeleNumberRowPos(PalettePos);
-}
-
-vec2 TeleNumberInputPos(const vec2 &PalettePos)
-{
-	vec2 Pos = TeleNumberRowPos(PalettePos);
-	Pos.x += TELE_NUMBER_BUTTON_WIDTH + TELE_NUMBER_ELEMENT_GAP;
-	return Pos;
-}
-
-vec2 TeleNumberPlusPos(const vec2 &PalettePos)
-{
-	vec2 Pos = TeleNumberInputPos(PalettePos);
-	Pos.x += TELE_NUMBER_INPUT_WIDTH + TELE_NUMBER_ELEMENT_GAP;
-	return Pos;
-}
-
-vec2 TeleNumberButtonSize()
-{
-	return vec2(TELE_NUMBER_BUTTON_WIDTH, TELE_NUMBER_BUTTON_HEIGHT);
-}
-
-vec2 TeleNumberInputSize()
-{
-	return vec2(TELE_NUMBER_INPUT_WIDTH, TELE_NUMBER_INPUT_HEIGHT);
-}
-
-constexpr const char *gs_apLayerNames[] = {"Game", "Front", "Tele"};
-
-const char *LayerDisplayName(CEditorSpec::ELayerGroup Layer)
-{
-	const int Index = std::clamp(static_cast<int>(Layer), 0, static_cast<int>(CEditorSpec::ELayerGroup::COUNT) - 1);
-	return gs_apLayerNames[Index];
-}
-
-CTile *LayerTileData(IMap *pMap, const CMapItemLayerTilemap *pTilemap, int Layer)
-{
-	if(!pMap || !pTilemap)
+	bool PointInRect(const vec2 &Point, const vec2 &TopLeft, const vec2 &Size)
 	{
-		return nullptr;
+		return Point.x >= TopLeft.x && Point.x <= TopLeft.x + Size.x &&
+		       Point.y >= TopLeft.y && Point.y <= TopLeft.y + Size.y;
 	}
 
-	int DataIndex = pTilemap->m_Data;
-	switch(Layer)
+	vec2 ToolPaletteHandlePos(const vec2 &PalettePos)
 	{
-	case LAYER_FRONT:
-		if(pTilemap->m_Front >= 0)
+		return PalettePos;
+	}
+
+	vec2 ToolPaletteHandleSize()
+	{
+		return vec2(TOOL_PALETTE_HANDLE_SIZE, TOOL_PALETTE_HANDLE_SIZE);
+	}
+
+	vec2 ToolPalettePrimaryButtonPos(const vec2 &PalettePos)
+	{
+		const float ButtonY = PalettePos.y + (TOOL_PALETTE_HEIGHT - TOOL_BUTTON_HEIGHT) * 0.5f;
+		return vec2(PalettePos.x + TOOL_PALETTE_HANDLE_SIZE + TOOL_PALETTE_PADDING, ButtonY);
+	}
+
+	vec2 ToolPalettePrimaryButtonSize()
+	{
+		return vec2(TOOL_BUTTON_WIDTH, TOOL_BUTTON_HEIGHT);
+	}
+
+	vec2 ToolPaletteSecondaryButtonPos(const vec2 &PalettePos)
+	{
+		vec2 Pos = ToolPalettePrimaryButtonPos(PalettePos);
+		Pos.x += TOOL_BUTTON_WIDTH + TOOL_BUTTON_GAP;
+		return Pos;
+	}
+
+	vec2 ToolPaletteShowDiffButtonPos(const vec2 &PalettePos)
+	{
+		const float ButtonY = PalettePos.y + (TOOL_PALETTE_HEIGHT - TOOL_TOGGLE_HEIGHT) * 0.5f;
+		const float ButtonX = PalettePos.x + TOOL_PALETTE_WIDTH - TOOL_PALETTE_PADDING - TOOL_TOGGLE_WIDTH;
+		return vec2(ButtonX, ButtonY);
+	}
+
+	vec2 ToolPaletteShowDiffButtonSize()
+	{
+		return vec2(TOOL_TOGGLE_WIDTH, TOOL_TOGGLE_HEIGHT);
+	}
+
+	vec2 ToolPaletteDestructiveButtonPos(const vec2 &PalettePos)
+	{
+		vec2 Pos = ToolPaletteShowDiffButtonPos(PalettePos);
+		Pos.x -= TOOL_TOGGLE_WIDTH + TOOL_TOGGLE_GAP;
+		return Pos;
+	}
+
+	vec2 ToolPaletteDestructiveButtonSize()
+	{
+		return vec2(TOOL_TOGGLE_WIDTH, TOOL_TOGGLE_HEIGHT);
+	}
+
+	vec2 ToolPaletteSize()
+	{
+		return vec2(TOOL_PALETTE_WIDTH, TOOL_PALETTE_HEIGHT);
+	}
+
+	vec2 ToolPaletteLayerDropdownPos(const vec2 &PalettePos)
+	{
+		const float DropdownY = PalettePos.y + (TOOL_PALETTE_HEIGHT - LAYER_DROPDOWN_HEIGHT) * 0.5f;
+		const float ToggleClusterWidth = TOOL_TOGGLE_WIDTH * 2.0f + TOOL_TOGGLE_GAP;
+		const float RightOffset = TOOL_PALETTE_PADDING + ToggleClusterWidth + TOOL_PALETTE_PADDING;
+		const float DropdownX = PalettePos.x + TOOL_PALETTE_WIDTH - RightOffset - LAYER_DROPDOWN_WIDTH;
+		return vec2(DropdownX, DropdownY);
+	}
+
+	vec2 ToolPaletteLayerDropdownSize()
+	{
+		return vec2(LAYER_DROPDOWN_WIDTH, LAYER_DROPDOWN_HEIGHT);
+	}
+
+	vec2 LayerDropdownOptionsPos(const vec2 &DropdownPos)
+	{
+		return DropdownPos + vec2(0.0f, LAYER_DROPDOWN_HEIGHT + LAYER_DROPDOWN_OPTION_SPACING);
+	}
+
+	vec2 LayerDropdownOptionSize()
+	{
+		return vec2(LAYER_DROPDOWN_WIDTH, LAYER_DROPDOWN_HEIGHT);
+	}
+
+	vec2 TeleMenuSize()
+	{
+		return vec2(TELE_MENU_WIDTH, TELE_MENU_HEIGHT);
+	}
+
+	vec2 TeleMenuPos(const vec2 &PalettePos)
+	{
+		const vec2 DropdownPos = ToolPaletteLayerDropdownPos(PalettePos);
+		const vec2 DropdownSize = ToolPaletteLayerDropdownSize();
+		const vec2 MenuSize = TeleMenuSize();
+		const float CenterX = DropdownPos.x + DropdownSize.x * 0.5f;
+		const float MenuX = CenterX - MenuSize.x * 0.5f;
+		const float MenuY = PalettePos.y + TOOL_PALETTE_HEIGHT + TELE_MENU_VERTICAL_GAP;
+		return vec2(MenuX, MenuY);
+	}
+
+	vec2 TeleNumberRowPos(const vec2 &PalettePos)
+	{
+		const vec2 MenuPos = TeleMenuPos(PalettePos);
+		const vec2 MenuSize = TeleMenuSize();
+		const float RowWidth = TELE_MENU_CONTENT_WIDTH;
+		const float RowX = MenuPos.x + (MenuSize.x - RowWidth) * 0.5f;
+		const float RowY = MenuPos.y + (TELE_MENU_HEIGHT - TELE_NUMBER_BUTTON_HEIGHT) * 0.5f;
+		return vec2(RowX, RowY);
+	}
+
+	vec2 TeleNumberMinusPos(const vec2 &PalettePos)
+	{
+		return TeleNumberRowPos(PalettePos);
+	}
+
+	vec2 TeleNumberInputPos(const vec2 &PalettePos)
+	{
+		vec2 Pos = TeleNumberRowPos(PalettePos);
+		Pos.x += TELE_NUMBER_BUTTON_WIDTH + TELE_NUMBER_ELEMENT_GAP;
+		return Pos;
+	}
+
+	vec2 TeleNumberPlusPos(const vec2 &PalettePos)
+	{
+		vec2 Pos = TeleNumberInputPos(PalettePos);
+		Pos.x += TELE_NUMBER_INPUT_WIDTH + TELE_NUMBER_ELEMENT_GAP;
+		return Pos;
+	}
+
+	vec2 TeleNumberButtonSize()
+	{
+		return vec2(TELE_NUMBER_BUTTON_WIDTH, TELE_NUMBER_BUTTON_HEIGHT);
+	}
+
+	vec2 TeleNumberInputSize()
+	{
+		return vec2(TELE_NUMBER_INPUT_WIDTH, TELE_NUMBER_INPUT_HEIGHT);
+	}
+
+	constexpr const char *gs_apLayerNames[] = {"Game", "Front", "Tele"};
+
+	const char *LayerDisplayName(CEditorSpec::ELayerGroup Layer)
+	{
+		const int Index = std::clamp(static_cast<int>(Layer), 0, static_cast<int>(CEditorSpec::ELayerGroup::COUNT) - 1);
+		return gs_apLayerNames[Index];
+	}
+
+	CTile *LayerTileData(IMap *pMap, const CMapItemLayerTilemap *pTilemap, int Layer)
+	{
+		if(!pMap || !pTilemap)
 		{
-			DataIndex = pTilemap->m_Front;
+			return nullptr;
 		}
-		break;
-	case LAYER_GAME:
-	default:
-		DataIndex = pTilemap->m_Data;
-		break;
-	}
 
-	if(DataIndex < 0)
-	{
-		return nullptr;
-	}
-
-	const size_t ExpectedSize = (size_t)pTilemap->m_Width * pTilemap->m_Height * sizeof(CTile);
-	if(static_cast<size_t>(pMap->GetDataSize(DataIndex)) < ExpectedSize)
-	{
-		return nullptr;
-	}
-
-	return static_cast<CTile *>(pMap->GetData(DataIndex));
-}
-
-CTeleTile *TeleLayerData(IMap *pMap, const CMapItemLayerTilemap *pTilemap)
-{
-	if(!pMap || !pTilemap || pTilemap->m_Tele < 0)
-	{
-		return nullptr;
-	}
-
-	const size_t ExpectedSize = (size_t)pTilemap->m_Width * pTilemap->m_Height * sizeof(CTeleTile);
-	if(static_cast<size_t>(pMap->GetDataSize(pTilemap->m_Tele)) < ExpectedSize)
-	{
-		return nullptr;
-	}
-
-	return static_cast<CTeleTile *>(pMap->GetData(pTilemap->m_Tele));
-}
-
-template<typename SampleType, typename TransformFunc>
-void RemapBrushSamples(const std::vector<SampleType> &Source, std::vector<SampleType> &Destination, int OldWidth, int OldHeight, int NewWidth, int NewHeight, const TransformFunc &MapFunc)
-{
-	for(int y = 0; y < OldHeight; ++y)
-	{
-		for(int x = 0; x < OldWidth; ++x)
+		int DataIndex = pTilemap->m_Data;
+		switch(Layer)
 		{
-			const ivec2 NewPos = MapFunc(x, y, OldWidth, OldHeight);
-			if(NewPos.x < 0 || NewPos.x >= NewWidth || NewPos.y < 0 || NewPos.y >= NewHeight)
+		case LAYER_FRONT:
+			if(pTilemap->m_Front >= 0)
 			{
-				continue;
+				DataIndex = pTilemap->m_Front;
 			}
-			const int OldIndex = y * OldWidth + x;
-			const int NewIndex = NewPos.y * NewWidth + NewPos.x;
-			Destination[NewIndex] = Source[OldIndex];
+			break;
+		case LAYER_GAME:
+		default:
+			DataIndex = pTilemap->m_Data;
+			break;
+		}
+
+		if(DataIndex < 0)
+		{
+			return nullptr;
+		}
+
+		const size_t ExpectedSize = (size_t)pTilemap->m_Width * pTilemap->m_Height * sizeof(CTile);
+		if(static_cast<size_t>(pMap->GetDataSize(DataIndex)) < ExpectedSize)
+		{
+			return nullptr;
+		}
+
+		return static_cast<CTile *>(pMap->GetData(DataIndex));
+	}
+
+	CTeleTile *TeleLayerData(IMap *pMap, const CMapItemLayerTilemap *pTilemap)
+	{
+		if(!pMap || !pTilemap || pTilemap->m_Tele < 0)
+		{
+			return nullptr;
+		}
+
+		const size_t ExpectedSize = (size_t)pTilemap->m_Width * pTilemap->m_Height * sizeof(CTeleTile);
+		if(static_cast<size_t>(pMap->GetDataSize(pTilemap->m_Tele)) < ExpectedSize)
+		{
+			return nullptr;
+		}
+
+		return static_cast<CTeleTile *>(pMap->GetData(pTilemap->m_Tele));
+	}
+
+	template<typename SampleType, typename TransformFunc>
+	void RemapBrushSamples(const std::vector<SampleType> &Source, std::vector<SampleType> &Destination, int OldWidth, int OldHeight, int NewWidth, int NewHeight, const TransformFunc &MapFunc)
+	{
+		for(int y = 0; y < OldHeight; ++y)
+		{
+			for(int x = 0; x < OldWidth; ++x)
+			{
+				const ivec2 NewPos = MapFunc(x, y, OldWidth, OldHeight);
+				if(NewPos.x < 0 || NewPos.x >= NewWidth || NewPos.y < 0 || NewPos.y >= NewHeight)
+				{
+					continue;
+				}
+				const int OldIndex = y * OldWidth + x;
+				const int NewIndex = NewPos.y * NewWidth + NewPos.x;
+				Destination[NewIndex] = Source[OldIndex];
+			}
 		}
 	}
-}
 
-int RotateTileFlagsCW(int Flags)
-{
-	if(Flags & TILEFLAG_ROTATE)
+	int RotateTileFlagsCW(int Flags)
 	{
-		Flags ^= (TILEFLAG_YFLIP | TILEFLAG_XFLIP);
+		if(Flags & TILEFLAG_ROTATE)
+		{
+			Flags ^= (TILEFLAG_YFLIP | TILEFLAG_XFLIP);
+		}
+		Flags ^= TILEFLAG_ROTATE;
+		return Flags;
 	}
-	Flags ^= TILEFLAG_ROTATE;
-	return Flags;
-}
 
-int RotateTileFlags(int Flags, bool Clockwise)
-{
-	int Steps = Clockwise ? 1 : 3;
-	Steps %= 4;
-	for(int i = 0; i < Steps; ++i)
+	int RotateTileFlags(int Flags, bool Clockwise)
 	{
-		Flags = RotateTileFlagsCW(Flags);
+		int Steps = Clockwise ? 1 : 3;
+		Steps %= 4;
+		for(int i = 0; i < Steps; ++i)
+		{
+			Flags = RotateTileFlagsCW(Flags);
+		}
+		return Flags;
 	}
-	return Flags;
-}
 
-int FlipTileFlagsHorizontal(int Flags)
-{
-	return Flags ^ ((Flags & TILEFLAG_ROTATE) ? TILEFLAG_YFLIP : TILEFLAG_XFLIP);
-}
+	int FlipTileFlagsHorizontal(int Flags)
+	{
+		return Flags ^ ((Flags & TILEFLAG_ROTATE) ? TILEFLAG_YFLIP : TILEFLAG_XFLIP);
+	}
 
-int FlipTileFlagsVertical(int Flags)
-{
-	return Flags ^ ((Flags & TILEFLAG_ROTATE) ? TILEFLAG_XFLIP : TILEFLAG_YFLIP);
-}
+	int FlipTileFlagsVertical(int Flags)
+	{
+		return Flags ^ ((Flags & TILEFLAG_ROTATE) ? TILEFLAG_XFLIP : TILEFLAG_YFLIP);
+	}
 }
 
 const char *CEditorSpec::BrushPickerEntitiesName() const
@@ -947,7 +947,6 @@ bool CEditorSpec::ApplyBrushTiledSelection(SState &State, const ivec2 &TopLeftTi
 	return AnySent;
 }
 
-
 bool CEditorSpec::ApplyDestructiveAirSelection(SState &State, const ivec2 &TopLeftTile, const ivec2 &Size, ELayerGroup Layer)
 {
 	if(Size.x <= 0 || Size.y <= 0)
@@ -1244,107 +1243,107 @@ void CEditorSpec::RenderBrushOverlay(const SState &State) const
 		}
 		const float HighlightAlpha = RenderedTiles ? 0.08f : 0.35f;
 		Graphics()->DrawRect(WorldX, WorldY, Width, Height, ColorRGBA(1.0f, 1.0f, 1.0f, HighlightAlpha), IGraphics::CORNER_ALL, 6.0f);
-		}
 	}
+}
 
-	void CEditorSpec::RenderBrushPicker(const SState &State) const
+void CEditorSpec::RenderBrushPicker(const SState &State) const
+{
+	if(!BrushPickerVisible(State))
 	{
-		if(!BrushPickerVisible(State))
+		return;
+	}
+	const float TileSize = BrushPickerTileSizeWorld();
+	const vec2 GridSize(BRUSH_PICKER_COLS * TileSize, BRUSH_PICKER_ROWS * TileSize);
+	const vec2 TopLeft = BrushPickerTopLeft(TileSize);
+	float ViewX0, ViewY0, ViewX1, ViewY1;
+	Graphics()->GetScreen(&ViewX0, &ViewY0, &ViewX1, &ViewY1);
+
+	Graphics()->TextureClear();
+	Graphics()->QuadsBegin();
+	Graphics()->SetColor(0.16f, 0.16f, 0.16f, 0.65f);
+	IGraphics::CQuadItem Fade(ViewX0, ViewY0, ViewX1 - ViewX0, ViewY1 - ViewY0);
+	Graphics()->QuadsDrawTL(&Fade, 1);
+	Graphics()->QuadsEnd();
+
+	const float Padding = TileSize * 0.5f;
+	Graphics()->DrawRect(TopLeft.x - Padding, TopLeft.y - Padding, GridSize.x + Padding * 2.0f, GridSize.y + Padding * 2.0f, ColorRGBA(0.2f, 0.2f, 0.2f, 0.95f), IGraphics::CORNER_ALL, 12.0f * maximum(TileSize / 32.0f, 0.5f));
+	Graphics()->DrawRect(TopLeft.x, TopLeft.y, GridSize.x, GridSize.y, ColorRGBA(0.24f, 0.24f, 0.24f, 0.98f), 0, 0.0f);
+
+	CRenderMap *pRenderMap = RenderMap();
+	if(pRenderMap)
+	{
+		const IGraphics::CTextureHandle PickerTexture = BrushPickerTexture(State.m_SelectedLayer);
+		if(PickerTexture.IsValid())
 		{
-			return;
-		}
-		const float TileSize = BrushPickerTileSizeWorld();
-		const vec2 GridSize(BRUSH_PICKER_COLS * TileSize, BRUSH_PICKER_ROWS * TileSize);
-		const vec2 TopLeft = BrushPickerTopLeft(TileSize);
-		float ViewX0, ViewY0, ViewX1, ViewY1;
-		Graphics()->GetScreen(&ViewX0, &ViewY0, &ViewX1, &ViewY1);
-
-		Graphics()->TextureClear();
-		Graphics()->QuadsBegin();
-		Graphics()->SetColor(0.16f, 0.16f, 0.16f, 0.65f);
-		IGraphics::CQuadItem Fade(ViewX0, ViewY0, ViewX1 - ViewX0, ViewY1 - ViewY0);
-		Graphics()->QuadsDrawTL(&Fade, 1);
-		Graphics()->QuadsEnd();
-
-		const float Padding = TileSize * 0.5f;
-		Graphics()->DrawRect(TopLeft.x - Padding, TopLeft.y - Padding, GridSize.x + Padding * 2.0f, GridSize.y + Padding * 2.0f, ColorRGBA(0.2f, 0.2f, 0.2f, 0.95f), IGraphics::CORNER_ALL, 12.0f * maximum(TileSize / 32.0f, 0.5f));
-		Graphics()->DrawRect(TopLeft.x, TopLeft.y, GridSize.x, GridSize.y, ColorRGBA(0.24f, 0.24f, 0.24f, 0.98f), 0, 0.0f);
-
-		CRenderMap *pRenderMap = RenderMap();
-		if(pRenderMap)
-		{
-			const IGraphics::CTextureHandle PickerTexture = BrushPickerTexture(State.m_SelectedLayer);
-			if(PickerTexture.IsValid())
+			Graphics()->TextureSet(PickerTexture);
+			Graphics()->BlendNormal();
+			const ColorRGBA TileTint = State.m_SelectedLayer == ELayerGroup::FRONT ? ColorRGBA(1.0f, 1.0f, 1.0f, 0.7f) : ColorRGBA(1.0f, 1.0f, 1.0f, 1.0f);
+			for(int y = 0; y < BRUSH_PICKER_ROWS; ++y)
 			{
-				Graphics()->TextureSet(PickerTexture);
-				Graphics()->BlendNormal();
-				const ColorRGBA TileTint = State.m_SelectedLayer == ELayerGroup::FRONT ? ColorRGBA(1.0f, 1.0f, 1.0f, 0.7f) : ColorRGBA(1.0f, 1.0f, 1.0f, 1.0f);
-				for(int y = 0; y < BRUSH_PICKER_ROWS; ++y)
+				for(int x = 0; x < BRUSH_PICKER_COLS; ++x)
 				{
-					for(int x = 0; x < BRUSH_PICKER_COLS; ++x)
-					{
-						const int TileIndex = y * BRUSH_PICKER_COLS + x;
-						const float TileX = TopLeft.x + x * TileSize;
-						const float TileY = TopLeft.y + y * TileSize;
-						pRenderMap->RenderTile(static_cast<int>(TileX), static_cast<int>(TileY), static_cast<unsigned char>(TileIndex), TileSize, TileTint);
-					}
+					const int TileIndex = y * BRUSH_PICKER_COLS + x;
+					const float TileX = TopLeft.x + x * TileSize;
+					const float TileY = TopLeft.y + y * TileSize;
+					pRenderMap->RenderTile(static_cast<int>(TileX), static_cast<int>(TileY), static_cast<unsigned char>(TileIndex), TileSize, TileTint);
 				}
 			}
 		}
-
-		Graphics()->TextureClear();
-		const ColorRGBA LineColor(1.0f, 1.0f, 1.0f, 0.06f);
-		const float LineThickness = maximum(TileSize * 0.03f, 1.0f);
-		for(int c = 1; c < BRUSH_PICKER_COLS; ++c)
-		{
-			const float LineX = TopLeft.x + c * TileSize - LineThickness * 0.5f;
-			Graphics()->DrawRect(LineX, TopLeft.y, LineThickness, GridSize.y, LineColor, 0, 0.0f);
-		}
-		for(int r = 1; r < BRUSH_PICKER_ROWS; ++r)
-		{
-			const float LineY = TopLeft.y + r * TileSize - LineThickness * 0.5f;
-			Graphics()->DrawRect(TopLeft.x, LineY, GridSize.x, LineThickness, LineColor, 0, 0.0f);
-		}
-
-		const auto RenderHighlight = [&](const ivec2 &Cell, const ColorRGBA &Color) {
-			const float X = TopLeft.x + Cell.x * TileSize;
-			const float Y = TopLeft.y + Cell.y * TileSize;
-			Graphics()->DrawRect(X, Y, TileSize, TileSize, Color, 0, 0.0f);
-		};
-		if(State.m_BrushPickerHasHover)
-		{
-			RenderHighlight(State.m_BrushPickerHoverCell, ColorRGBA(1.0f, 1.0f, 1.0f, 0.18f));
-		}
-		if(State.m_BrushPickerSelecting)
-		{
-			const ivec2 Start = State.m_BrushPickerStartCell;
-			const ivec2 End = State.m_BrushPickerCurrentCell;
-			const int MinX = minimum(Start.x, End.x);
-			const int MinY = minimum(Start.y, End.y);
-			const int Width = abs(Start.x - End.x) + 1;
-			const int Height = abs(Start.y - End.y) + 1;
-			const float SelX = TopLeft.x + MinX * TileSize;
-			const float SelY = TopLeft.y + MinY * TileSize;
-			const float SelW = Width * TileSize;
-			const float SelH = Height * TileSize;
-			Graphics()->DrawRect(SelX, SelY, SelW, SelH, ColorRGBA(0.2f, 0.6f, 1.0f, 0.2f), 0, 0.0f);
-			const float Border = maximum(TileSize * 0.06f, 1.0f);
-			Graphics()->DrawRect(SelX, SelY, SelW, Border, ColorRGBA(0.7f, 0.85f, 1.0f, 0.9f), 0, 0.0f);
-			Graphics()->DrawRect(SelX, SelY + SelH - Border, SelW, Border, ColorRGBA(0.7f, 0.85f, 1.0f, 0.9f), 0, 0.0f);
-			Graphics()->DrawRect(SelX, SelY + Border, Border, SelH - 2.0f * Border, ColorRGBA(0.7f, 0.85f, 1.0f, 0.9f), 0, 0.0f);
-			Graphics()->DrawRect(SelX + SelW - Border, SelY + Border, Border, SelH - 2.0f * Border, ColorRGBA(0.7f, 0.85f, 1.0f, 0.9f), 0, 0.0f);
-		}
-
-		TextRender()->TextColor(ColorRGBA(1.0f, 1.0f, 1.0f, 0.95f));
-		TextRender()->TextOutlineColor(ColorRGBA(0.0f, 0.0f, 0.0f, 0.8f));
-		const float LabelFontSize = 18.0f * maximum(TileSize / 32.0f, 0.6f);
-		const char *pLayerName = LayerDisplayName(State.m_SelectedLayer);
-		const float LabelX = TopLeft.x;
-		const float LabelY = TopLeft.y - Padding * 0.75f - LabelFontSize;
-		TextRender()->Text(LabelX, LabelY, LabelFontSize, pLayerName);
-		TextRender()->TextOutlineColor(TextRender()->DefaultTextOutlineColor());
-		TextRender()->TextColor(TextRender()->DefaultTextColor());
 	}
+
+	Graphics()->TextureClear();
+	const ColorRGBA LineColor(1.0f, 1.0f, 1.0f, 0.06f);
+	const float LineThickness = maximum(TileSize * 0.03f, 1.0f);
+	for(int c = 1; c < BRUSH_PICKER_COLS; ++c)
+	{
+		const float LineX = TopLeft.x + c * TileSize - LineThickness * 0.5f;
+		Graphics()->DrawRect(LineX, TopLeft.y, LineThickness, GridSize.y, LineColor, 0, 0.0f);
+	}
+	for(int r = 1; r < BRUSH_PICKER_ROWS; ++r)
+	{
+		const float LineY = TopLeft.y + r * TileSize - LineThickness * 0.5f;
+		Graphics()->DrawRect(TopLeft.x, LineY, GridSize.x, LineThickness, LineColor, 0, 0.0f);
+	}
+
+	const auto RenderHighlight = [&](const ivec2 &Cell, const ColorRGBA &Color) {
+		const float X = TopLeft.x + Cell.x * TileSize;
+		const float Y = TopLeft.y + Cell.y * TileSize;
+		Graphics()->DrawRect(X, Y, TileSize, TileSize, Color, 0, 0.0f);
+	};
+	if(State.m_BrushPickerHasHover)
+	{
+		RenderHighlight(State.m_BrushPickerHoverCell, ColorRGBA(1.0f, 1.0f, 1.0f, 0.18f));
+	}
+	if(State.m_BrushPickerSelecting)
+	{
+		const ivec2 Start = State.m_BrushPickerStartCell;
+		const ivec2 End = State.m_BrushPickerCurrentCell;
+		const int MinX = minimum(Start.x, End.x);
+		const int MinY = minimum(Start.y, End.y);
+		const int Width = abs(Start.x - End.x) + 1;
+		const int Height = abs(Start.y - End.y) + 1;
+		const float SelX = TopLeft.x + MinX * TileSize;
+		const float SelY = TopLeft.y + MinY * TileSize;
+		const float SelW = Width * TileSize;
+		const float SelH = Height * TileSize;
+		Graphics()->DrawRect(SelX, SelY, SelW, SelH, ColorRGBA(0.2f, 0.6f, 1.0f, 0.2f), 0, 0.0f);
+		const float Border = maximum(TileSize * 0.06f, 1.0f);
+		Graphics()->DrawRect(SelX, SelY, SelW, Border, ColorRGBA(0.7f, 0.85f, 1.0f, 0.9f), 0, 0.0f);
+		Graphics()->DrawRect(SelX, SelY + SelH - Border, SelW, Border, ColorRGBA(0.7f, 0.85f, 1.0f, 0.9f), 0, 0.0f);
+		Graphics()->DrawRect(SelX, SelY + Border, Border, SelH - 2.0f * Border, ColorRGBA(0.7f, 0.85f, 1.0f, 0.9f), 0, 0.0f);
+		Graphics()->DrawRect(SelX + SelW - Border, SelY + Border, Border, SelH - 2.0f * Border, ColorRGBA(0.7f, 0.85f, 1.0f, 0.9f), 0, 0.0f);
+	}
+
+	TextRender()->TextColor(ColorRGBA(1.0f, 1.0f, 1.0f, 0.95f));
+	TextRender()->TextOutlineColor(ColorRGBA(0.0f, 0.0f, 0.0f, 0.8f));
+	const float LabelFontSize = 18.0f * maximum(TileSize / 32.0f, 0.6f);
+	const char *pLayerName = LayerDisplayName(State.m_SelectedLayer);
+	const float LabelX = TopLeft.x;
+	const float LabelY = TopLeft.y - Padding * 0.75f - LabelFontSize;
+	TextRender()->Text(LabelX, LabelY, LabelFontSize, pLayerName);
+	TextRender()->TextOutlineColor(TextRender()->DefaultTextOutlineColor());
+	TextRender()->TextColor(TextRender()->DefaultTextColor());
+}
 
 int CEditorSpec::CurrentDummy() const
 {
@@ -2519,7 +2518,7 @@ void CEditorSpec::OnRender()
 	}
 
 	RenderBrushPicker(State);
-    
+
 	if(State.m_Active)
 	{
 		GameClient()->RenderTools()->RenderCursor(State.m_CursorWorld, 48.0f);

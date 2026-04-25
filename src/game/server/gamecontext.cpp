@@ -44,14 +44,14 @@
 #include <game/mapitems.h>
 #include <game/version.h>
 
-#include <vector>
 #include <algorithm>
+#include <vector>
 
 namespace
 {
-constexpr size_t MAX_PENDING_EDITOR_SPEC_DRAW_SEGMENTS = 256;
-constexpr int MAX_DRAW_SEGMENTS_PER_PACKET = 32;
-constexpr size_t MAX_EDITOR_SPEC_TEXT_LENGTH = 256;
+	constexpr size_t MAX_PENDING_EDITOR_SPEC_DRAW_SEGMENTS = 256;
+	constexpr int MAX_DRAW_SEGMENTS_PER_PACKET = 32;
+	constexpr size_t MAX_EDITOR_SPEC_TEXT_LENGTH = 256;
 }
 
 // Not thread-safe!
@@ -89,25 +89,25 @@ void CClientChatLogger::Log(const CLogMessage *pMessage)
 
 namespace
 {
-int64_t MakeLiveTileKey(int Layer, int X, int Y)
-{
-	const uint32_t SafeLayer = static_cast<uint32_t>(Layer) & 0xFFu;
-	const uint32_t SafeY = static_cast<uint32_t>(Y) & 0xFFFFu;
-	const uint32_t SafeX = static_cast<uint32_t>(X) & 0xFFFFu;
-	const int64_t LayerComponent = static_cast<int64_t>(SafeLayer) << 48;
-	const int64_t YComponent = static_cast<int64_t>(SafeY) << 24;
-	const int64_t XComponent = static_cast<int64_t>(SafeX);
-	return LayerComponent | YComponent | XComponent;
-}
+	int64_t MakeLiveTileKey(int Layer, int X, int Y)
+	{
+		const uint32_t SafeLayer = static_cast<uint32_t>(Layer) & 0xFFu;
+		const uint32_t SafeY = static_cast<uint32_t>(Y) & 0xFFFFu;
+		const uint32_t SafeX = static_cast<uint32_t>(X) & 0xFFFFu;
+		const int64_t LayerComponent = static_cast<int64_t>(SafeLayer) << 48;
+		const int64_t YComponent = static_cast<int64_t>(SafeY) << 24;
+		const int64_t XComponent = static_cast<int64_t>(SafeX);
+		return LayerComponent | YComponent | XComponent;
+	}
 
-int64_t MakeLiveTeleTileKey(int X, int Y)
-{
-	const uint32_t SafeY = static_cast<uint32_t>(Y) & 0xFFFFu;
-	const uint32_t SafeX = static_cast<uint32_t>(X) & 0xFFFFu;
-	const int64_t YComponent = static_cast<int64_t>(SafeY) << 24;
-	const int64_t XComponent = static_cast<int64_t>(SafeX);
-	return YComponent | XComponent;
-}
+	int64_t MakeLiveTeleTileKey(int X, int Y)
+	{
+		const uint32_t SafeY = static_cast<uint32_t>(Y) & 0xFFFFu;
+		const uint32_t SafeX = static_cast<uint32_t>(X) & 0xFFFFu;
+		const int64_t YComponent = static_cast<int64_t>(SafeY) << 24;
+		const int64_t XComponent = static_cast<int64_t>(SafeX);
+		return YComponent | XComponent;
+	}
 }
 
 CGameContext::CGameContext(bool Resetting) :
@@ -5160,62 +5160,62 @@ void CGameContext::LoadMapSettings()
 
 namespace
 {
-CTile *TileLayerData(IMap *pMap, CMapItemLayerTilemap *pTilemap, int Layer)
-{
-	if(!pMap || !pTilemap)
+	CTile *TileLayerData(IMap *pMap, CMapItemLayerTilemap *pTilemap, int Layer)
 	{
-		return nullptr;
-	}
-
-	int DataIndex = pTilemap->m_Data;
-	switch(Layer)
-	{
-	case LAYER_FRONT:
-		if(pTilemap->m_Front >= 0)
+		if(!pMap || !pTilemap)
 		{
-			DataIndex = pTilemap->m_Front;
+			return nullptr;
 		}
-		break;
-	case LAYER_GAME:
-	default:
-		DataIndex = pTilemap->m_Data;
-		break;
+
+		int DataIndex = pTilemap->m_Data;
+		switch(Layer)
+		{
+		case LAYER_FRONT:
+			if(pTilemap->m_Front >= 0)
+			{
+				DataIndex = pTilemap->m_Front;
+			}
+			break;
+		case LAYER_GAME:
+		default:
+			DataIndex = pTilemap->m_Data;
+			break;
+		}
+
+		if(DataIndex < 0)
+		{
+			return nullptr;
+		}
+
+		const size_t ExpectedSize = (size_t)pTilemap->m_Width * pTilemap->m_Height * sizeof(CTile);
+		if(static_cast<size_t>(pMap->GetDataSize(DataIndex)) < ExpectedSize)
+		{
+			return nullptr;
+		}
+
+		return static_cast<CTile *>(pMap->GetData(DataIndex));
 	}
 
-	if(DataIndex < 0)
+	CTeleTile *TeleLayerExtraData(IMap *pMap, CMapItemLayerTilemap *pTilemap)
 	{
-		return nullptr;
+		if(!pMap || !pTilemap)
+		{
+			return nullptr;
+		}
+
+		if(pTilemap->m_Tele < 0)
+		{
+			return nullptr;
+		}
+
+		const size_t ExpectedSize = (size_t)pTilemap->m_Width * pTilemap->m_Height * sizeof(CTeleTile);
+		if(static_cast<size_t>(pMap->GetDataSize(pTilemap->m_Tele)) < ExpectedSize)
+		{
+			return nullptr;
+		}
+
+		return static_cast<CTeleTile *>(pMap->GetData(pTilemap->m_Tele));
 	}
-
-	const size_t ExpectedSize = (size_t)pTilemap->m_Width * pTilemap->m_Height * sizeof(CTile);
-	if(static_cast<size_t>(pMap->GetDataSize(DataIndex)) < ExpectedSize)
-	{
-		return nullptr;
-	}
-
-	return static_cast<CTile *>(pMap->GetData(DataIndex));
-}
-
-CTeleTile *TeleLayerExtraData(IMap *pMap, CMapItemLayerTilemap *pTilemap)
-{
-	if(!pMap || !pTilemap)
-	{
-		return nullptr;
-	}
-
-	if(pTilemap->m_Tele < 0)
-	{
-		return nullptr;
-	}
-
-	const size_t ExpectedSize = (size_t)pTilemap->m_Width * pTilemap->m_Height * sizeof(CTeleTile);
-	if(static_cast<size_t>(pMap->GetDataSize(pTilemap->m_Tele)) < ExpectedSize)
-	{
-		return nullptr;
-	}
-
-	return static_cast<CTeleTile *>(pMap->GetData(pTilemap->m_Tele));
-}
 }
 
 void CGameContext::RememberLiveTileModification(int Layer, int X, int Y, int Index, int Flags)
@@ -5549,7 +5549,8 @@ void CGameContext::TestLiveTileModification()
 	{
 		const int X = m_Prng.RandomBits() % pGameLayer->m_Width;
 		const int Y = m_Prng.RandomBits() % pGameLayer->m_Height;
-					Modified = ApplyTileModification(LAYER_GAME, X, Y, TILE_NOHOOK, 0, true);	}
+		Modified = ApplyTileModification(LAYER_GAME, X, Y, TILE_NOHOOK, 0, true);
+	}
 
 	m_LastLiveTileTestTick = Now;
 	if(!Modified)

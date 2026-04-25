@@ -149,32 +149,33 @@ static bool FillSlot(CGraphicTile &Tile, CGraphicTileTextureCoords *pTex, unsign
 	return true;
 }
 
-namespace {
-struct STileSlotLayout
+namespace
 {
-	size_t m_Interior;  // W*H interior slots starting here
-	size_t m_Corners;   // 4 corner slots
-	size_t m_Top;       // W top border slots
-	size_t m_Bottom;    // W bottom border slots
-	size_t m_Left;      // H left border slots
-	size_t m_Right;     // H right border slots
-	size_t m_Kill;      // 1 kill tile slot (game layer only)
-	size_t m_Total;
-};
+	struct STileSlotLayout
+	{
+		size_t m_Interior; // W*H interior slots starting here
+		size_t m_Corners; // 4 corner slots
+		size_t m_Top; // W top border slots
+		size_t m_Bottom; // W bottom border slots
+		size_t m_Left; // H left border slots
+		size_t m_Right; // H right border slots
+		size_t m_Kill; // 1 kill tile slot (game layer only)
+		size_t m_Total;
+	};
 
-static STileSlotLayout ComputeSlotLayout(int Width, int Height, bool IsGameLayer)
-{
-	STileSlotLayout L;
-	L.m_Interior = 0;
-	L.m_Corners = (size_t)Width * Height;
-	L.m_Top = L.m_Corners + 4;
-	L.m_Bottom = L.m_Top + Width;
-	L.m_Left = L.m_Bottom + Width;
-	L.m_Right = L.m_Left + Height;
-	L.m_Kill = L.m_Right + Height;
-	L.m_Total = L.m_Kill + (IsGameLayer ? 1 : 0);
-	return L;
-}
+	static STileSlotLayout ComputeSlotLayout(int Width, int Height, bool IsGameLayer)
+	{
+		STileSlotLayout L;
+		L.m_Interior = 0;
+		L.m_Corners = (size_t)Width * Height;
+		L.m_Top = L.m_Corners + 4;
+		L.m_Bottom = L.m_Top + Width;
+		L.m_Left = L.m_Bottom + Width;
+		L.m_Right = L.m_Left + Height;
+		L.m_Kill = L.m_Right + Height;
+		L.m_Total = L.m_Kill + (IsGameLayer ? 1 : 0);
+		return L;
+	}
 }
 
 class CTmpQuadVertexTextured
@@ -1095,9 +1096,7 @@ void CRenderLayerTile::UploadTileDataPreAllocated(std::optional<CTileLayerVisual
 	Visuals.m_BufferContainerIndex = -1;
 	Visuals.m_BufferObjectIndex = -1;
 
-	const size_t UploadDataSize = DoTextureCoords
-		? vTmpTiles.size() * 4 * (sizeof(vec2) + sizeof(ubvec4))
-		: vTmpTiles.size() * sizeof(CGraphicTile);
+	const size_t UploadDataSize = DoTextureCoords ? vTmpTiles.size() * 4 * (sizeof(vec2) + sizeof(ubvec4)) : vTmpTiles.size() * sizeof(CGraphicTile);
 	if(UploadDataSize == 0)
 	{
 		RenderLoading();

@@ -83,37 +83,36 @@
 #include <game/version.h>
 
 #include <algorithm>
-#include <string>
-#include <vector>
 #include <array>
 #include <chrono>
 #include <limits>
+#include <string>
+#include <vector>
 
 using namespace std::chrono_literals;
 
 namespace
 {
-int ClampTileIndex(int Index)
-{
-	return std::clamp(Index, 0, 255);
-}
-
-int TileToolCustomTileIndexForSlot(int Slot)
-{
-	switch(Slot)
+	int ClampTileIndex(int Index)
 	{
-	case 1:
-		return ClampTileIndex(g_Config.m_ClCustomTilePick1);
-	case 2:
-		return ClampTileIndex(g_Config.m_ClCustomTilePick2);
-	default:
-		return TILE_AIR;
+		return std::clamp(Index, 0, 255);
+	}
+
+	int TileToolCustomTileIndexForSlot(int Slot)
+	{
+		switch(Slot)
+		{
+		case 1:
+			return ClampTileIndex(g_Config.m_ClCustomTilePick1);
+		case 2:
+			return ClampTileIndex(g_Config.m_ClCustomTilePick2);
+		default:
+			return TILE_AIR;
+		}
 	}
 }
-}
 
-const std::array<CGameClient::STileToolPaletteEntry, CGameClient::TILE_TOOL_PALETTE_SIZE> CGameClient::ms_aTileToolPalette = {{
-	{"hook", CGameClient::STileToolLayer{TILE_SOLID, 0}, true, CGameClient::STileToolLayer{TILE_AIR, 0}, 0, 0},
+const std::array<CGameClient::STileToolPaletteEntry, CGameClient::TILE_TOOL_PALETTE_SIZE> CGameClient::ms_aTileToolPalette = {{{"hook", CGameClient::STileToolLayer{TILE_SOLID, 0}, true, CGameClient::STileToolLayer{TILE_AIR, 0}, 0, 0},
 	{"death", CGameClient::STileToolLayer{TILE_DEATH, 0}, true, CGameClient::STileToolLayer{TILE_AIR, 0}, 0, 0},
 	{"unhook", CGameClient::STileToolLayer{TILE_NOHOOK, 0}, true, CGameClient::STileToolLayer{TILE_AIR, 0}, 0, 0},
 	{"ht", CGameClient::STileToolLayer{TILE_NOHOOK, 0}, true, CGameClient::STileToolLayer{TILE_THROUGH_CUT, 0}, 0, 0},
@@ -125,8 +124,7 @@ const std::array<CGameClient::STileToolPaletteEntry, CGameClient::TILE_TOOL_PALE
 	{"start", CGameClient::STileToolLayer{TILE_START, 0}, true, CGameClient::STileToolLayer{TILE_AIR, 0}, 0, 0},
 	{"finish", CGameClient::STileToolLayer{TILE_FINISH, 0}, true, CGameClient::STileToolLayer{TILE_AIR, 0}, 0, 0},
 	{"custom 1", CGameClient::STileToolLayer{TILE_AIR, 0}, true, CGameClient::STileToolLayer{TILE_AIR, 0}, 1, 0},
-	{"custom 2", CGameClient::STileToolLayer{TILE_AIR, 0}, true, CGameClient::STileToolLayer{TILE_AIR, 0}, 2, 0}
-}};
+	{"custom 2", CGameClient::STileToolLayer{TILE_AIR, 0}, true, CGameClient::STileToolLayer{TILE_AIR, 0}, 2, 0}}};
 
 const char *CGameClient::Version() const { return GAME_VERSION; }
 const char *CGameClient::NetVersion() const { return GAME_NETVERSION; }
@@ -217,7 +215,7 @@ void CGameClient::OnConsoleInit()
 						  &m_Scoreboard,
 						  &m_Motd, // for pressing esc to remove it
 						  &m_Spectator,
-					  &m_EditorSpec,
+						  &m_EditorSpec,
 						  &m_Emoticon,
 						  &m_ImportantAlert,
 						  &m_Menus,
@@ -344,89 +342,89 @@ static void GenerateTimeoutCode(char *pTimeoutCode)
 namespace
 {
 
-void RecalculateTilemapSkip(const CMapItemLayerTilemap *pTilemap, IMap *pMap)
-{
-	if(!pMap || !pTilemap)
-		return;
-
-	CTile *pTiles = static_cast<CTile *>(pMap->GetData(pTilemap->m_Data));
-	if(!pTiles)
-		return;
-
-	const int Width = pTilemap->m_Width;
-	const int Height = pTilemap->m_Height;
-	if(Width <= 0 || Height <= 0)
-		return;
-
-	for(int y = 0; y < Height; ++y)
+	void RecalculateTilemapSkip(const CMapItemLayerTilemap *pTilemap, IMap *pMap)
 	{
-		pTiles[y * Width].m_Skip = 0;
-		for(int x = 1; x < Width;)
+		if(!pMap || !pTilemap)
+			return;
+
+		CTile *pTiles = static_cast<CTile *>(pMap->GetData(pTilemap->m_Data));
+		if(!pTiles)
+			return;
+
+		const int Width = pTilemap->m_Width;
+		const int Height = pTilemap->m_Height;
+		if(Width <= 0 || Height <= 0)
+			return;
+
+		for(int y = 0; y < Height; ++y)
 		{
-			int SkippedX;
-			for(SkippedX = 1; x + SkippedX < Width && SkippedX < 255; ++SkippedX)
+			pTiles[y * Width].m_Skip = 0;
+			for(int x = 1; x < Width;)
 			{
-				if(pTiles[y * Width + x + SkippedX].m_Index)
-					break;
+				int SkippedX;
+				for(SkippedX = 1; x + SkippedX < Width && SkippedX < 255; ++SkippedX)
+				{
+					if(pTiles[y * Width + x + SkippedX].m_Index)
+						break;
+				}
+
+				pTiles[y * Width + x].m_Skip = SkippedX - 1;
+				x += SkippedX;
 			}
-
-			pTiles[y * Width + x].m_Skip = SkippedX - 1;
-			x += SkippedX;
 		}
 	}
-}
 
-CTile *EditableLayerTileData(IMap *pMap, const CMapItemLayerTilemap *pTilemap, int Layer)
-{
-	if(!pMap || !pTilemap)
+	CTile *EditableLayerTileData(IMap *pMap, const CMapItemLayerTilemap *pTilemap, int Layer)
 	{
-		return nullptr;
-	}
-
-	int DataIndex = pTilemap->m_Data;
-	switch(Layer)
-	{
-	case LAYER_FRONT:
-		if(pTilemap->m_Front >= 0)
+		if(!pMap || !pTilemap)
 		{
-			DataIndex = pTilemap->m_Front;
+			return nullptr;
 		}
-		break;
-	case LAYER_GAME:
-	default:
-		DataIndex = pTilemap->m_Data;
-		break;
+
+		int DataIndex = pTilemap->m_Data;
+		switch(Layer)
+		{
+		case LAYER_FRONT:
+			if(pTilemap->m_Front >= 0)
+			{
+				DataIndex = pTilemap->m_Front;
+			}
+			break;
+		case LAYER_GAME:
+		default:
+			DataIndex = pTilemap->m_Data;
+			break;
+		}
+
+		if(DataIndex < 0)
+		{
+			return nullptr;
+		}
+
+		const size_t ExpectedSize = (size_t)pTilemap->m_Width * pTilemap->m_Height * sizeof(CTile);
+		if(static_cast<size_t>(pMap->GetDataSize(DataIndex)) < ExpectedSize)
+		{
+			return nullptr;
+		}
+
+		return static_cast<CTile *>(pMap->GetData(DataIndex));
 	}
 
-	if(DataIndex < 0)
+	CTeleTile *EditableTeleLayerData(IMap *pMap, const CMapItemLayerTilemap *pTilemap)
 	{
-		return nullptr;
+		if(!pMap || !pTilemap || pTilemap->m_Tele < 0)
+		{
+			return nullptr;
+		}
+
+		const size_t ExpectedSize = (size_t)pTilemap->m_Width * pTilemap->m_Height * sizeof(CTeleTile);
+		if(static_cast<size_t>(pMap->GetDataSize(pTilemap->m_Tele)) < ExpectedSize)
+		{
+			return nullptr;
+		}
+
+		return static_cast<CTeleTile *>(pMap->GetData(pTilemap->m_Tele));
 	}
-
-	const size_t ExpectedSize = (size_t)pTilemap->m_Width * pTilemap->m_Height * sizeof(CTile);
-	if(static_cast<size_t>(pMap->GetDataSize(DataIndex)) < ExpectedSize)
-	{
-		return nullptr;
-	}
-
-	return static_cast<CTile *>(pMap->GetData(DataIndex));
-}
-
-CTeleTile *EditableTeleLayerData(IMap *pMap, const CMapItemLayerTilemap *pTilemap)
-{
-	if(!pMap || !pTilemap || pTilemap->m_Tele < 0)
-	{
-		return nullptr;
-	}
-
-	const size_t ExpectedSize = (size_t)pTilemap->m_Width * pTilemap->m_Height * sizeof(CTeleTile);
-	if(static_cast<size_t>(pMap->GetDataSize(pTilemap->m_Tele)) < ExpectedSize)
-	{
-		return nullptr;
-	}
-
-	return static_cast<CTeleTile *>(pMap->GetData(pTilemap->m_Tele));
-}
 
 } // namespace
 

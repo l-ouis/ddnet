@@ -123,7 +123,7 @@ public:
 	bool DoRender(const CRenderLayerParams &Params) override;
 	void Init() override;
 	void OnInit(IGraphics *pGraphics, ITextRender *pTextRender, CRenderMap *pRenderMap, std::shared_ptr<CEnvelopeManager> &pEnvelopeManager, IMap *pMap, IMapImages *pMapImages, std::optional<FRenderUploadCallback> &FRenderUploadCallbackOptional) override;
- 	bool RefreshForTilemap(const CMapItemLayerTilemap *pTilemap) override;
+	bool RefreshForTilemap(const CMapItemLayerTilemap *pTilemap) override;
 	bool UpdateTileInPlaceForTilemap(const CMapItemLayerTilemap *pTilemap, int tx, int ty) override;
 
 	virtual int GetDataIndex(unsigned int &TileSize) const;

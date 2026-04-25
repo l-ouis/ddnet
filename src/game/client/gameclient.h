@@ -145,8 +145,8 @@ class CGameClient : public IGameClient
 {
 public:
 	// all components
-		struct STileToolLayer;
-		struct STileToolPaletteEntry;
+	struct STileToolLayer;
+	struct STileToolPaletteEntry;
 
 	CInfoMessages m_InfoMessages;
 	CCamera m_Camera;
@@ -857,7 +857,6 @@ private:
 	std::vector<SDirtyTile> m_DirtyTiles;
 
 public:
-
 	struct SClientGameSkin
 	{
 		// health armor hud

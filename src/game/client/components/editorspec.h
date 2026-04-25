@@ -7,8 +7,8 @@
 
 #include <engine/client/enums.h>
 #include <engine/console.h>
-#include <engine/input.h>
 #include <engine/graphics.h>
+#include <engine/input.h>
 
 #include <generated/protocol.h>
 
