@@ -159,6 +159,19 @@ bool CMapRenderer::RefreshTileLayer(const CMapItemLayerTilemap *pTilemap)
 	return Refreshed;
 }
 
+bool CMapRenderer::UpdateTileInPlace(const CMapItemLayerTilemap *pTilemap, int tx, int ty)
+{
+	if(!pTilemap)
+		return false;
+	bool Updated = false;
+	for(auto &pRenderLayer : m_vpRenderLayers)
+	{
+		if(pRenderLayer->UpdateTileInPlaceForTilemap(pTilemap, tx, ty))
+			Updated = true;
+	}
+	return Updated;
+}
+
 void CMapRenderer::DisableUploadCallbacks()
 {
 	for(auto &pRenderLayer : m_vpRenderLayers)

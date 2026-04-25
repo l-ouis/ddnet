@@ -29,6 +29,7 @@ public:
 	void OnRender() override;
 	void OnMapLoad() override;
 	bool RefreshTilemap(const CMapItemLayerTilemap *pTilemap);
+	bool UpdateTileInPlace(const CMapItemLayerTilemap *pTilemap, int tx, int ty);
 
 	virtual CCamera *GetCurCamera();
 

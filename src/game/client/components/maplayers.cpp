@@ -56,6 +56,13 @@ bool CMapLayers::RefreshTilemap(const CMapItemLayerTilemap *pTilemap)
 	return m_MapRenderer.RefreshTileLayer(pTilemap);
 }
 
+bool CMapLayers::UpdateTileInPlace(const CMapItemLayerTilemap *pTilemap, int tx, int ty)
+{
+	if(!pTilemap)
+		return false;
+	return m_MapRenderer.UpdateTileInPlace(pTilemap, tx, ty);
+}
+
 void CMapLayers::OnRender()
 {
 	if(m_OnlineOnly && Client()->State() != IClient::STATE_ONLINE && Client()->State() != IClient::STATE_DEMOPLAYBACK)

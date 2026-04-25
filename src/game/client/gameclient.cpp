@@ -763,6 +763,8 @@ void CGameClient::OnConnected()
 
 void CGameClient::OnReset()
 {
+	m_DirtyTiles.clear();
+
 	InvalidateSnapshot();
 
 	m_EditorMovementDelay = 5;
@@ -958,6 +960,8 @@ void CGameClient::UpdatePositions()
 
 void CGameClient::OnRender()
 {
+	FlushDirtyTiles();
+
 	const ColorRGBA ClearColor = color_cast<ColorRGBA>(ColorHSLA(g_Config.m_ClOverlayEntities ? g_Config.m_ClBackgroundEntitiesColor : g_Config.m_ClBackgroundColor));
 	Graphics()->Clear(ClearColor.r, ClearColor.g, ClearColor.b);
 
@@ -1485,7 +1489,7 @@ void CGameClient::OnMessage(int MsgId, CUnpacker *pUnpacker, int Conn, bool Dumm
 			m_Collision.SetCollisionAt(WorldX, WorldY, pMsg->m_Index);
 		}
 
-		RefreshTileLayer(pTilemap);
+		MarkTileDirty(pTilemap, pMsg->m_X, pMsg->m_Y);
 	}
 	else if(MsgId == NETMSGTYPE_SV_MODIFYTELETILE)
 	{
@@ -1516,7 +1520,7 @@ void CGameClient::OnMessage(int MsgId, CUnpacker *pUnpacker, int Conn, bool Dumm
 		CTeleTile &TeleTile = pTeleTiles[TileIndex];
 		TeleTile.m_Type = pMsg->m_Index == TILE_AIR ? 0 : pMsg->m_Index;
 		TeleTile.m_Number = std::clamp(pMsg->m_Number, 0, 255);
-		RefreshTileLayer(pTelemap);
+		MarkTileDirty(pTelemap, pMsg->m_X, pMsg->m_Y);
 	}
 	else if(MsgId == NETMSGTYPE_SV_TILECURSOR)
 	{
@@ -1614,6 +1618,25 @@ void CGameClient::RefreshTileLayer(const CMapItemLayerTilemap *pTilemap)
 	m_MapLayersForeground.RefreshTilemap(pTilemap);
 }
 
+void CGameClient::MarkTileDirty(const CMapItemLayerTilemap *pTilemap, int tx, int ty)
+{
+	if(!pTilemap)
+		return;
+	m_DirtyTiles.push_back({pTilemap, tx, ty});
+}
+
+void CGameClient::FlushDirtyTiles()
+{
+	if(m_DirtyTiles.empty())
+		return;
+	for(const SDirtyTile &Dirty : m_DirtyTiles)
+	{
+		m_MapLayersBackground.UpdateTileInPlace(Dirty.m_pTilemap, Dirty.m_X, Dirty.m_Y);
+		m_MapLayersForeground.UpdateTileInPlace(Dirty.m_pTilemap, Dirty.m_X, Dirty.m_Y);
+	}
+	m_DirtyTiles.clear();
+}
+
 void CGameClient::OnStateChange(int NewState, int OldState)
 {
 	// reset everything when not already connected (to keep gathered stuff)
@@ -1627,6 +1650,8 @@ void CGameClient::OnStateChange(int NewState, int OldState)
 
 void CGameClient::OnShutdown()
 {
+	m_DirtyTiles.clear();
+
 	for(auto &pComponent : m_vpAll)
 		pComponent->OnShutdown();
 

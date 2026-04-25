@@ -74,6 +74,7 @@ public:
 	virtual bool IsGroup() const { return false; }
 	virtual void Unload() = 0;
 	virtual bool RefreshForTilemap(const CMapItemLayerTilemap *pTilemap);
+	virtual bool UpdateTileInPlaceForTilemap(const CMapItemLayerTilemap *pTilemap, int tx, int ty);
 	void DisableRenderUploadCallback();
 
 	bool IsVisibleInClipRegion(const std::optional<CClipRegion> &ClipRegion) const;
@@ -123,10 +124,12 @@ public:
 	void Init() override;
 	void OnInit(IGraphics *pGraphics, ITextRender *pTextRender, CRenderMap *pRenderMap, std::shared_ptr<CEnvelopeManager> &pEnvelopeManager, IMap *pMap, IMapImages *pMapImages, std::optional<FRenderUploadCallback> &FRenderUploadCallbackOptional) override;
  	bool RefreshForTilemap(const CMapItemLayerTilemap *pTilemap) override;
+	bool UpdateTileInPlaceForTilemap(const CMapItemLayerTilemap *pTilemap, int tx, int ty) override;
 
 	virtual int GetDataIndex(unsigned int &TileSize) const;
 	bool IsValid() const override { return GetRawData() != nullptr; }
 	void Unload() override;
+	virtual void UpdateTileInPlace(int tx, int ty);
 
 protected:
 	virtual void Refresh();
@@ -152,7 +155,10 @@ protected:
 			m_Width = 0;
 			m_Height = 0;
 			m_BufferContainerIndex = -1;
+			m_BufferObjectIndex = -1;
+			m_IsGameLayer = false;
 			m_IsTextured = false;
+			m_PreAllocated = false;
 		}
 
 		bool Init(unsigned int Width, unsigned int Height);
@@ -211,10 +217,15 @@ protected:
 		unsigned int m_Width;
 		unsigned int m_Height;
 		int m_BufferContainerIndex;
+		int m_BufferObjectIndex;
+		bool m_IsGameLayer;
 		bool m_IsTextured;
+		bool m_PreAllocated;
 	};
 
 	void UploadTileData(std::optional<CTileLayerVisuals> &VisualsOptional, int CurOverlay, bool AddAsSpeedup, bool IsGameLayer = false);
+	void UploadTileDataPreAllocated(std::optional<CTileLayerVisuals> &VisualsOptional, int CurOverlay, bool AddAsSpeedup, bool IsGameLayer);
+	void UpdateTileInPlaceForVisual(std::optional<CTileLayerVisuals> &VisualsOptional, int tx, int ty, int CurOverlay, bool AddAsSpeedup);
 
 	virtual void RenderTileLayerWithTileBuffer(const ColorRGBA &Color, const CRenderLayerParams &Params);
 	virtual void RenderTileLayerNoTileBuffer(const ColorRGBA &Color, const CRenderLayerParams &Params);
@@ -325,6 +336,7 @@ public:
 	void Init() override;
 	void InitTileData() override;
 	void Unload() override;
+	void UpdateTileInPlace(int tx, int ty) override;
 
 protected:
 	void Refresh() override;
@@ -345,6 +357,7 @@ public:
 	void Init() override;
 	void InitTileData() override;
 	void Unload() override;
+	void UpdateTileInPlace(int tx, int ty) override;
 
 protected:
 	void Refresh() override;
@@ -367,6 +380,7 @@ public:
 	void Init() override;
 	void InitTileData() override;
 	void Unload() override;
+	void UpdateTileInPlace(int tx, int ty) override;
 
 protected:
 	void Refresh() override;

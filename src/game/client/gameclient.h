@@ -844,6 +844,19 @@ public:
 	void LoadHudSkin(const char *pPath, bool AsDir = false);
 	void LoadExtrasSkin(const char *pPath, bool AsDir = false);
 	void RefreshTileLayer(const CMapItemLayerTilemap *pTilemap);
+	void MarkTileDirty(const CMapItemLayerTilemap *pTilemap, int tx, int ty);
+	void FlushDirtyTiles();
+
+private:
+	struct SDirtyTile
+	{
+		const CMapItemLayerTilemap *m_pTilemap;
+		int m_X;
+		int m_Y;
+	};
+	std::vector<SDirtyTile> m_DirtyTiles;
+
+public:
 
 	struct SClientGameSkin
 	{

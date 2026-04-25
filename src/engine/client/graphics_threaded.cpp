@@ -2049,6 +2049,11 @@ void CGraphics_Threaded::RecreateBufferObject(int BufferIndex, size_t UploadData
 	}
 }
 
+void CGraphics_Threaded::UpdateBufferObject(int BufferIndex, size_t UploadDataSize, void *pUploadData, size_t Offset)
+{
+	UpdateBufferObjectInternal(BufferIndex, UploadDataSize, pUploadData, (void *)(uintptr_t)Offset);
+}
+
 void CGraphics_Threaded::UpdateBufferObjectInternal(int BufferIndex, size_t UploadDataSize, void *pUploadData, void *pOffset, bool IsMovedPointer)
 {
 	CCommandBuffer::SCommand_UpdateBufferObject Cmd;
