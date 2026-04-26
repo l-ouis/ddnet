@@ -173,6 +173,8 @@ class CClient : public IClient, public CDemoPlayer::IListener
 	// time
 	CSmoothTime m_aGameTime[NUM_DUMMIES];
 	CSmoothTime m_PredictedTime;
+	float m_GameSpeedScale = 1.0f;
+	int64_t ScaledTimeFreq() const;
 
 	// input
 	struct // TODO: handle input better

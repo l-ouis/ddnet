@@ -222,6 +222,7 @@ public:
 	CHttp m_Http;
 
 	int64_t m_GameStartTime;
+	float m_GameSpeedScale;
 
 	enum
 	{
@@ -338,6 +339,8 @@ public:
 
 	void SendRconType(int ClientId, bool UsernameReq);
 	void SendCapabilities(int ClientId);
+	void SendGameSpeed(int ClientId);
+	void SetGameSpeedScale(float Scale);
 	void SendMap(int ClientId);
 	void SendMapData(int ClientId, int Chunk);
 	void SendMapReload(int ClientId);
@@ -432,6 +435,7 @@ public:
 	static void ConKick(IConsole::IResult *pResult, void *pUser);
 	static void ConStatus(IConsole::IResult *pResult, void *pUser);
 	static void ConShutdown(IConsole::IResult *pResult, void *pUser);
+	static void ConSetGameSpeed(IConsole::IResult *pResult, void *pUser);
 	static void ConRecord(IConsole::IResult *pResult, void *pUser);
 	static void ConStopRecord(IConsole::IResult *pResult, void *pUser);
 	static void ConMapReload(IConsole::IResult *pResult, void *pUser);

@@ -244,6 +244,7 @@ CServer::CServer() :
 	m_pGameServer = nullptr;
 
 	m_CurrentGameTick = MIN_TICK;
+	m_GameSpeedScale = 1.0f;
 	m_RunServer = UNINITIALIZED;
 
 	m_aShutdownReason[0] = 0;
@@ -581,7 +582,35 @@ void CServer::RedirectClient(int ClientId, int Port)
 
 int64_t CServer::TickStartTime(int Tick)
 {
-	return m_GameStartTime + (time_freq() * Tick) / TickSpeed();
+	return m_GameStartTime + (int64_t)((double)time_freq() / m_GameSpeedScale) * Tick / TickSpeed();
+}
+
+void CServer::SetGameSpeedScale(float Scale)
+{
+	Scale = std::clamp(Scale, 0.05f, 10.0f);
+	if(Scale == m_GameSpeedScale)
+		return;
+
+	// Re-anchor m_GameStartTime so TickStartTime(m_CurrentGameTick) stays at the
+	// current real time across the rate change — otherwise the very next tick
+	// would be scheduled relative to the new scale starting from tick 0, causing
+	// a large jump (or stall) in real-time pacing.
+	const int64_t Now = time_get();
+	m_GameSpeedScale = Scale;
+	m_GameStartTime = Now - (int64_t)((double)time_freq() / m_GameSpeedScale) * m_CurrentGameTick / TickSpeed();
+
+	for(int i = 0; i < MAX_CLIENTS; i++)
+	{
+		if(m_aClients[i].m_State == CClient::STATE_INGAME)
+			SendGameSpeed(i);
+	}
+}
+
+void CServer::SendGameSpeed(int ClientId)
+{
+	CMsgPacker Msg(NETMSG_GAME_SPEED, true);
+	Msg.AddInt((int)std::round(m_GameSpeedScale * 1000.0f));
+	SendMsg(&Msg, MSGFLAG_VITAL, ClientId);
 }
 
 int CServer::Init()
@@ -2033,6 +2062,8 @@ void CServer::OnNetMsgEnterGame(int ClientId)
 	if(!IsSixup(ClientId))
 	{
 		SendServerInfo(ClientAddr(ClientId), -1, SERVERINFO_EXTENDED, false);
+		if(m_GameSpeedScale != 1.0f)
+			SendGameSpeed(ClientId);
 	}
 	else
 	{
@@ -3837,6 +3868,22 @@ void CServer::ConShutdown(IConsole::IResult *pResult, void *pUser)
 	}
 }
 
+void CServer::ConSetGameSpeed(IConsole::IResult *pResult, void *pUser)
+{
+	CServer *pThis = static_cast<CServer *>(pUser);
+	if(pResult->NumArguments() == 0)
+	{
+		char aBuf[64];
+		str_format(aBuf, sizeof(aBuf), "current game speed: %.3fx", pThis->m_GameSpeedScale);
+		pThis->Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "server", aBuf);
+		return;
+	}
+	pThis->SetGameSpeedScale(pResult->GetFloat(0));
+	char aBuf[64];
+	str_format(aBuf, sizeof(aBuf), "game speed set to %.3fx", pThis->m_GameSpeedScale);
+	pThis->Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "server", aBuf);
+}
+
 void CServer::DemoRecorder_HandleAutoStart()
 {
 	if(Config()->m_SvAutoDemoRecord)
@@ -4401,6 +4448,7 @@ void CServer::RegisterCommands()
 	Console()->Register("kick", "i[id] ?r[reason]", CFGFLAG_SERVER, ConKick, this, "Kick player with specified id for any reason");
 	Console()->Register("status", "?r[name]", CFGFLAG_SERVER, ConStatus, this, "List players containing name or all players");
 	Console()->Register("shutdown", "?r[reason]", CFGFLAG_SERVER, ConShutdown, this, "Shut down");
+	Console()->Register("sv_game_speed", "?f[scale]", CFGFLAG_SERVER, ConSetGameSpeed, this, "Set game speed multiplier (1.0 = normal, 0.25 = quarter speed); pass no argument to query current value");
 	Console()->Register("logout", "", CFGFLAG_SERVER, ConLogout, this, "Logout of rcon");
 	Console()->Register("show_ips", "?i[show]", CFGFLAG_SERVER, ConShowIps, this, "Show IP addresses in rcon commands (1 = on, 0 = off)");
 	Console()->Register("hide_auth_status", "?i[hide]", CFGFLAG_SERVER, ConHideAuthStatus, this, "Opt out of spectator count and hide auth status to non-authed players (1 = hidden, 0 = shown)");
