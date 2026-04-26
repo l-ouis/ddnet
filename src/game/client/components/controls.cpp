@@ -25,8 +25,6 @@ CControls::CControls()
 	std::fill(std::begin(m_aMousePosOnAction), std::end(m_aMousePosOnAction), vec2(0.0f, 0.0f));
 	std::fill(std::begin(m_aTargetPos), std::end(m_aTargetPos), vec2(0.0f, 0.0f));
 	std::fill(std::begin(m_aMouseInputType), std::end(m_aMouseInputType), EMouseInputType::ABSOLUTE);
-	std::fill(std::begin(m_aTileToolClearState), std::end(m_aTileToolClearState), 0);
-	std::fill(std::begin(m_aLastTileToolClearState), std::end(m_aLastTileToolClearState), 0);
 }
 
 void CControls::OnReset()
@@ -52,8 +50,6 @@ void CControls::ResetInput(int Dummy)
 
 	m_aInputDirectionLeft[Dummy] = 0;
 	m_aInputDirectionRight[Dummy] = 0;
-	m_aTileToolClearState[Dummy] = 0;
-	m_aLastTileToolClearState[Dummy] = 0;
 }
 
 void CControls::OnPlayerDeath()
@@ -139,10 +135,6 @@ void CControls::OnConsoleInit()
 	{
 		static CInputState s_State = {this, {&m_aInputData[0].m_Fire, &m_aInputData[1].m_Fire}};
 		Console()->Register("+fire", "", CFGFLAG_CLIENT, ConKeyInputCounter, &s_State, "Fire");
-	}
-	{
-		static CInputState s_State = {this, {&m_aTileToolClearState[0], &m_aTileToolClearState[1]}};
-		Console()->Register("+tiletool_clear", "", CFGFLAG_CLIENT, ConKeyInputState, &s_State, "Hold to clear tiles with the tile tool");
 	}
 	{
 		static CInputState s_State = {this, {&m_aShowHookColl[0], &m_aShowHookColl[1]}};
@@ -338,37 +330,10 @@ int CControls::SnapInput(int *pData)
 		Send = Send || (GameClient()->m_Snap.m_pLocalCharacter && GameClient()->m_Snap.m_pLocalCharacter->m_Weapon == WEAPON_NINJA && (m_aInputData[g_Config.m_ClDummy].m_Direction || m_aInputData[g_Config.m_ClDummy].m_Jump || m_aInputData[g_Config.m_ClDummy].m_Hook));
 	}
 
-	const int ActiveDummy = g_Config.m_ClDummy;
-	const bool TileWeaponFireHeld = (m_aInputData[ActiveDummy].m_Fire & 1) != 0;
-	const bool TileWeaponFirePressed = TileWeaponFireHeld && (m_aLastData[ActiveDummy].m_Fire & 1) == 0;
-	const bool TileWeaponFireReleased = !TileWeaponFireHeld && (m_aLastData[ActiveDummy].m_Fire & 1) != 0;
-	const bool TileToolClearHeld = m_aTileToolClearState[ActiveDummy] != 0;
-	const bool TileToolClearPressed = TileToolClearHeld && m_aLastTileToolClearState[ActiveDummy] == 0;
-	const bool TileToolClearReleased = !TileToolClearHeld && m_aLastTileToolClearState[ActiveDummy] != 0;
-	vec2 ZoomedTileTarget = vec2(0.0f, 0.0f);
-	bool HasZoomedTileTarget = false;
-	const auto GetZoomedTileTarget = [&]() -> const vec2 & {
-		if(!HasZoomedTileTarget)
-		{
-			const vec2 ReferencePos = EditorSpec ? GameClient()->m_Controls.m_aMousePos[ActiveDummy] : GameClient()->m_LocalCharacterPos;
-			const float Zoom = GameClient()->m_Camera.m_Zoom;
-			ZoomedTileTarget = ReferencePos + (m_aTargetPos[ActiveDummy] - ReferencePos) * Zoom;
-			HasZoomedTileTarget = true;
-		}
-		return ZoomedTileTarget;
-	};
-	if(TileWeaponFirePressed || TileWeaponFireHeld || TileWeaponFireReleased)
-	{
-		GameClient()->HandleTileToolInput(GetZoomedTileTarget(), TileWeaponFirePressed, TileWeaponFireHeld, TileWeaponFireReleased);
-	}
-	if(TileToolClearPressed || TileToolClearHeld || TileToolClearReleased)
-	{
-		GameClient()->HandleTileToolClearInput(GetZoomedTileTarget(), TileToolClearPressed, TileToolClearHeld, TileToolClearReleased);
-	}
-	m_aLastTileToolClearState[ActiveDummy] = TileToolClearHeld ? 1 : 0;
 
 	if(EditorSpec)
 	{
+		const int ActiveDummy = g_Config.m_ClDummy;
 		CNetObj_PlayerInput &Input = m_aInputData[ActiveDummy];
 		const CNetObj_PlayerInput &LastInput = m_aLastData[ActiveDummy];
 		Input.m_Direction = 0;

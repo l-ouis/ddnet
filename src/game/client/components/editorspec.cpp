@@ -26,6 +26,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <string>
 
 namespace
@@ -48,6 +49,39 @@ namespace
 	constexpr float LAYER_DROPDOWN_ROUNDING = 8.0f;
 	constexpr int PRIMARY_TOOL_PAINTBRUSH = 0;
 	constexpr int PRIMARY_TOOL_DRAW = 1;
+	constexpr int PRIMARY_TOOL_BEZIER_PEN = 2;
+	constexpr int PRIMARY_TOOL_BEZIER_ELLIPSE = 3;
+	constexpr int PRIMARY_TOOL_BEZIER_RECT = 4;
+	constexpr int PRIMARY_TOOL_BEZIER_EDIT = 5;
+
+	// Bezier menu layout (anchored below the tool palette / tele menu).
+	constexpr float BEZIER_MENU_VERTICAL_GAP = 8.0f;
+	constexpr float BEZIER_MENU_WIDTH = 720.0f;
+	constexpr float BEZIER_MENU_HEIGHT = 52.0f;
+	constexpr float BEZIER_MENU_ROUNDING = 8.0f;
+	constexpr float BEZIER_MENU_PADDING = 12.0f;
+	constexpr float BEZIER_TOOL_BUTTON_WIDTH = 78.0f;
+	constexpr float BEZIER_TOOL_BUTTON_HEIGHT = 30.0f;
+	constexpr float BEZIER_TOOL_BUTTON_GAP = 6.0f;
+	constexpr float BEZIER_ACTION_BUTTON_WIDTH = 64.0f;
+	constexpr float BEZIER_ACTION_BUTTON_HEIGHT = 30.0f;
+	constexpr float BEZIER_ACTION_BUTTON_GAP = 6.0f;
+	constexpr float BEZIER_GROUP_GAP = 14.0f;
+	constexpr float BEZIER_SPINNER_BUTTON_SIZE = 26.0f;
+	constexpr float BEZIER_SPINNER_VALUE_WIDTH = 50.0f;
+	constexpr float BEZIER_SPINNER_GAP = 5.0f;
+	constexpr int BEZIER_NUM_TOOLS = 4;
+	constexpr int BEZIER_NUM_ACTIONS = 3;
+	// Pen tool: distance in world units below which click+drag still counts as a corner click.
+	constexpr float BEZIER_PEN_DRAG_THRESHOLD = 4.0f;
+	// Edit tool: anchor / handle hit-test radius in world units.
+	constexpr float BEZIER_EDIT_HIT_RADIUS = 10.0f;
+	// Pen tool: clicking within this radius of the first anchor closes the path.
+	constexpr float BEZIER_PEN_CLOSE_RADIUS = 12.0f;
+	// Standard cubic bezier handle length to approximate a quarter circle (4*(sqrt(2)-1)/3).
+	constexpr float BEZIER_ELLIPSE_HANDLE_RATIO = 0.5522847498f;
+	// Tessellation: number of segments per cubic curve. A bit aggressive to keep raster smooth.
+	constexpr int BEZIER_TESSELLATION_STEPS = 24;
 	constexpr float TELE_MENU_VERTICAL_GAP = 8.0f;
 	constexpr float TELE_MENU_HEIGHT = 46.0f;
 	constexpr float TELE_MENU_ROUNDING = 8.0f;
@@ -215,6 +249,107 @@ namespace
 	vec2 TeleNumberInputSize()
 	{
 		return vec2(TELE_NUMBER_INPUT_WIDTH, TELE_NUMBER_INPUT_HEIGHT);
+	}
+
+	vec2 BezierMenuSize()
+	{
+		return vec2(BEZIER_MENU_WIDTH, BEZIER_MENU_HEIGHT);
+	}
+
+	// Bezier menu sits below palette, and below tele menu when the tele menu is showing.
+	vec2 BezierMenuPos(const vec2 &PalettePos, bool TeleMenuVisible)
+	{
+		const vec2 Size = BezierMenuSize();
+		const float CenterX = PalettePos.x + TOOL_PALETTE_WIDTH * 0.5f;
+		const float MenuX = CenterX - Size.x * 0.5f;
+		float MenuY = PalettePos.y + TOOL_PALETTE_HEIGHT + BEZIER_MENU_VERTICAL_GAP;
+		if(TeleMenuVisible)
+		{
+			MenuY += TELE_MENU_HEIGHT + TELE_MENU_VERTICAL_GAP;
+		}
+		return vec2(MenuX, MenuY);
+	}
+
+	vec2 BezierToolButtonPos(const vec2 &PalettePos, bool TeleMenuVisible, int Index)
+	{
+		const vec2 MenuPos = BezierMenuPos(PalettePos, TeleMenuVisible);
+		const float ButtonY = MenuPos.y + (BEZIER_MENU_HEIGHT - BEZIER_TOOL_BUTTON_HEIGHT) * 0.5f;
+		const float ButtonX = MenuPos.x + BEZIER_MENU_PADDING + Index * (BEZIER_TOOL_BUTTON_WIDTH + BEZIER_TOOL_BUTTON_GAP);
+		return vec2(ButtonX, ButtonY);
+	}
+
+	vec2 BezierToolButtonSize()
+	{
+		return vec2(BEZIER_TOOL_BUTTON_WIDTH, BEZIER_TOOL_BUTTON_HEIGHT);
+	}
+
+	float BezierToolGroupRight(const vec2 &PalettePos, bool TeleMenuVisible)
+	{
+		// X just past the last tool button.
+		const vec2 LastBtn = BezierToolButtonPos(PalettePos, TeleMenuVisible, BEZIER_NUM_TOOLS - 1);
+		return LastBtn.x + BEZIER_TOOL_BUTTON_WIDTH;
+	}
+
+	vec2 BezierActionButtonPos(const vec2 &PalettePos, bool TeleMenuVisible, int Index)
+	{
+		const vec2 MenuPos = BezierMenuPos(PalettePos, TeleMenuVisible);
+		const float ButtonY = MenuPos.y + (BEZIER_MENU_HEIGHT - BEZIER_ACTION_BUTTON_HEIGHT) * 0.5f;
+		const float StartX = BezierToolGroupRight(PalettePos, TeleMenuVisible) + BEZIER_GROUP_GAP;
+		const float ButtonX = StartX + Index * (BEZIER_ACTION_BUTTON_WIDTH + BEZIER_ACTION_BUTTON_GAP);
+		return vec2(ButtonX, ButtonY);
+	}
+
+	vec2 BezierActionButtonSize()
+	{
+		return vec2(BEZIER_ACTION_BUTTON_WIDTH, BEZIER_ACTION_BUTTON_HEIGHT);
+	}
+
+	float BezierActionGroupRight(const vec2 &PalettePos, bool TeleMenuVisible)
+	{
+		const vec2 LastBtn = BezierActionButtonPos(PalettePos, TeleMenuVisible, BEZIER_NUM_ACTIONS - 1);
+		return LastBtn.x + BEZIER_ACTION_BUTTON_WIDTH;
+	}
+
+	vec2 BezierSpinnerMinusPos(const vec2 &PalettePos, bool TeleMenuVisible)
+	{
+		const vec2 MenuPos = BezierMenuPos(PalettePos, TeleMenuVisible);
+		const float ButtonY = MenuPos.y + (BEZIER_MENU_HEIGHT - BEZIER_SPINNER_BUTTON_SIZE) * 0.5f;
+		const float ButtonX = BezierActionGroupRight(PalettePos, TeleMenuVisible) + BEZIER_GROUP_GAP;
+		return vec2(ButtonX, ButtonY);
+	}
+
+	vec2 BezierSpinnerValuePos(const vec2 &PalettePos, bool TeleMenuVisible)
+	{
+		vec2 Pos = BezierSpinnerMinusPos(PalettePos, TeleMenuVisible);
+		Pos.x += BEZIER_SPINNER_BUTTON_SIZE + BEZIER_SPINNER_GAP;
+		return Pos;
+	}
+
+	vec2 BezierSpinnerPlusPos(const vec2 &PalettePos, bool TeleMenuVisible)
+	{
+		vec2 Pos = BezierSpinnerValuePos(PalettePos, TeleMenuVisible);
+		Pos.x += BEZIER_SPINNER_VALUE_WIDTH + BEZIER_SPINNER_GAP;
+		return Pos;
+	}
+
+	vec2 BezierSpinnerButtonSize()
+	{
+		return vec2(BEZIER_SPINNER_BUTTON_SIZE, BEZIER_SPINNER_BUTTON_SIZE);
+	}
+
+	vec2 BezierSpinnerValueSize()
+	{
+		return vec2(BEZIER_SPINNER_VALUE_WIDTH, BEZIER_SPINNER_BUTTON_SIZE);
+	}
+
+	vec2 EvalCubicBezier(const vec2 &P0, const vec2 &P1, const vec2 &P2, const vec2 &P3, float t)
+	{
+		const float u = 1.0f - t;
+		const float u2 = u * u;
+		const float u3 = u2 * u;
+		const float t2 = t * t;
+		const float t3 = t2 * t;
+		return P0 * u3 + P1 * (3.0f * u2 * t) + P2 * (3.0f * u * t2) + P3 * t3;
 	}
 
 	constexpr const char *gs_apLayerNames[] = {"Game", "Front", "Tele"};
@@ -1575,6 +1710,37 @@ bool CEditorSpec::OnCursorMove(float x, float y, IInput::ECursorType CursorType)
 		State.m_AreaSelectCurrentWorld = State.m_CursorWorld;
 	}
 
+	// Bezier pen: extend the just-placed anchor's outgoing handle as the user drags away from it.
+	// In-handle is the mirror so the anchor stays smooth.
+	if(State.m_BezierPenDragging && !State.m_BezierPath.Empty())
+	{
+		SState::SBezierAnchor &Last = State.m_BezierPath.m_vAnchors.back();
+		const vec2 HandleDelta = State.m_CursorWorld - Last.m_Pos;
+		if(length(State.m_CursorWorld - State.m_BezierPenPressWorld) > BEZIER_PEN_DRAG_THRESHOLD)
+		{
+			Last.m_OutHandle = HandleDelta;
+			Last.m_InHandle = -HandleDelta;
+		}
+	}
+
+	// Bezier edit: drag whichever anchor or handle was grabbed on press.
+	if(State.m_BezierEditAnchor >= 0 && State.m_BezierEditAnchor < (int)State.m_BezierPath.m_vAnchors.size() && State.m_LeftMouseHeld)
+	{
+		SState::SBezierAnchor &A = State.m_BezierPath.m_vAnchors[State.m_BezierEditAnchor];
+		if(State.m_BezierEditHandle == 0)
+		{
+			A.m_Pos = State.m_CursorWorld;
+		}
+		else if(State.m_BezierEditHandle == 1)
+		{
+			A.m_InHandle = State.m_CursorWorld - A.m_Pos;
+		}
+		else if(State.m_BezierEditHandle == 2)
+		{
+			A.m_OutHandle = State.m_CursorWorld - A.m_Pos;
+		}
+	}
+
 	if(State.m_ToolPaletteDragging)
 	{
 		State.m_ToolPalettePos = State.m_CursorWorld - State.m_ToolPaletteDragOffset;
@@ -1948,6 +2114,32 @@ bool CEditorSpec::OnInput(const IInput::CEvent &Event)
 					}
 					BeginDrawText(State, State.m_CursorWorld);
 				}
+				else if(State.m_SelectedPrimaryTool == PRIMARY_TOOL_BEZIER_EDIT)
+				{
+					// Right-click on an anchor deletes it.
+					int Anchor = -1;
+					int Handle = 0;
+					if(BezierEditHitTest(State, State.m_CursorWorld, Anchor, Handle) && Handle == 0)
+					{
+						State.m_BezierPath.m_vAnchors.erase(State.m_BezierPath.m_vAnchors.begin() + Anchor);
+						if(State.m_BezierPath.m_vAnchors.size() < 2)
+						{
+							State.m_BezierPath.m_Closed = false;
+						}
+						if(State.m_BezierPath.m_vAnchors.empty())
+						{
+							State.m_BezierPath.Clear();
+						}
+						State.m_BezierEditAnchor = -1;
+					}
+				}
+				else if(BezierIsActiveTool(State.m_SelectedPrimaryTool))
+				{
+					// Other bezier tools: RMB cancels in-progress shape drag, otherwise no-op
+					// (don't clear the brush — the bezier tools don't use it for input).
+					State.m_BezierShapeDragging = false;
+					State.m_BezierPenDragging = false;
+				}
 				else
 				{
 					State.m_BrushSelecting = false;
@@ -2006,7 +2198,8 @@ bool CEditorSpec::OnInput(const IInput::CEvent &Event)
 		const vec2 ShowDiffSize = ToolPaletteShowDiffButtonSize();
 		const bool CursorInDestructiveToggle = State.m_ToolPaletteActive && PointInRect(State.m_CursorWorld, TogglePos, ToggleSize);
 		const bool CursorInShowDiffToggle = State.m_ToolPaletteActive && PointInRect(State.m_CursorWorld, ShowDiffPos, ShowDiffSize);
-		const bool CursorOverToolPaletteUi = CursorInPaletteBody || CursorInDropdownOptions || CursorInDestructiveToggle || CursorInShowDiffToggle;
+		const bool CursorInBezierMenu = CursorOverBezierMenu(State);
+		const bool CursorOverToolPaletteUi = CursorInPaletteBody || CursorInDropdownOptions || CursorInDestructiveToggle || CursorInShowDiffToggle || CursorInBezierMenu;
 
 		if(Press && State.m_ToolPaletteActive)
 		{
@@ -2087,6 +2280,96 @@ bool CEditorSpec::OnInput(const IInput::CEvent &Event)
 				Consumed = true;
 			}
 		}
+		// Bezier menu: tool selectors, action buttons, stroke-width spinner.
+		if(!Consumed && State.m_ToolPaletteActive && Press)
+		{
+			const bool TeleVis = (State.m_SelectedLayer == ELayerGroup::TELE);
+			const int aBezierTools[BEZIER_NUM_TOOLS] = {
+				PRIMARY_TOOL_BEZIER_PEN, PRIMARY_TOOL_BEZIER_ELLIPSE,
+				PRIMARY_TOOL_BEZIER_RECT, PRIMARY_TOOL_BEZIER_EDIT};
+			const vec2 ToolSize = BezierToolButtonSize();
+			for(int i = 0; i < BEZIER_NUM_TOOLS && !Consumed; ++i)
+			{
+				const vec2 Pos = BezierToolButtonPos(State.m_ToolPalettePos, TeleVis, i);
+				if(!PointInRect(State.m_CursorWorld, Pos, ToolSize))
+					continue;
+				const int Tool = aBezierTools[i];
+				// Switching into a bezier tool clears unrelated tool state. We keep the
+				// existing path so the user can switch between Pen ↔ Edit freely.
+				ClearDrawState(State);
+				State.m_BrushPainting = false;
+				State.m_BrushSelecting = false;
+				State.m_LastBrushApplyTile = ivec2(-1, -1);
+				State.m_BezierShapeDragging = false;
+				State.m_BezierPenDragging = false;
+				State.m_BezierEditAnchor = -1;
+				// Switching to a new shape tool clears the old path; otherwise keep it.
+				if(Tool == PRIMARY_TOOL_BEZIER_ELLIPSE || Tool == PRIMARY_TOOL_BEZIER_RECT)
+				{
+					State.m_BezierPath.Clear();
+				}
+				State.m_SelectedPrimaryTool = Tool;
+				Consumed = true;
+			}
+
+			if(!Consumed)
+			{
+				const vec2 ActSize = BezierActionButtonSize();
+				// Action 0: Clear
+				const vec2 ClearPos = BezierActionButtonPos(State.m_ToolPalettePos, TeleVis, 0);
+				if(PointInRect(State.m_CursorWorld, ClearPos, ActSize))
+				{
+					State.m_BezierPath.Clear();
+					State.m_BezierPenDragging = false;
+					State.m_BezierShapeDragging = false;
+					State.m_BezierEditAnchor = -1;
+					Consumed = true;
+				}
+				// Action 1: Fill
+				if(!Consumed)
+				{
+					const vec2 FillPos = BezierActionButtonPos(State.m_ToolPalettePos, TeleVis, 1);
+					if(PointInRect(State.m_CursorWorld, FillPos, ActSize))
+					{
+						if(State.m_BezierPath.m_Closed)
+						{
+							ApplyBezierFill(State);
+						}
+						Consumed = true;
+					}
+				}
+				// Action 2: Stroke
+				if(!Consumed)
+				{
+					const vec2 StrokePos = BezierActionButtonPos(State.m_ToolPalettePos, TeleVis, 2);
+					if(PointInRect(State.m_CursorWorld, StrokePos, ActSize))
+					{
+						if(!State.m_BezierPath.Empty())
+						{
+							ApplyBezierStroke(State);
+						}
+						Consumed = true;
+					}
+				}
+			}
+
+			if(!Consumed)
+			{
+				const vec2 BtnSize = BezierSpinnerButtonSize();
+				const vec2 MinusPos = BezierSpinnerMinusPos(State.m_ToolPalettePos, TeleVis);
+				const vec2 PlusPos = BezierSpinnerPlusPos(State.m_ToolPalettePos, TeleVis);
+				if(PointInRect(State.m_CursorWorld, MinusPos, BtnSize))
+				{
+					g_Config.m_ClBezierStrokeWidth = std::clamp(g_Config.m_ClBezierStrokeWidth - 1, 1, 32);
+					Consumed = true;
+				}
+				else if(PointInRect(State.m_CursorWorld, PlusPos, BtnSize))
+				{
+					g_Config.m_ClBezierStrokeWidth = std::clamp(g_Config.m_ClBezierStrokeWidth + 1, 1, 32);
+					Consumed = true;
+				}
+			}
+		}
 		else if(Release)
 		{
 			if(State.m_ToolPaletteDragging)
@@ -2139,6 +2422,89 @@ bool CEditorSpec::OnInput(const IInput::CEvent &Event)
 
 		const bool PaintbrushEnabled = State.m_SelectedPrimaryTool == PRIMARY_TOOL_PAINTBRUSH && !State.m_CtrlHeld && !CursorOverToolPaletteUi && !State.m_DrawTextEditing;
 		const bool DrawEnabled = State.m_SelectedPrimaryTool == PRIMARY_TOOL_DRAW && !State.m_CtrlHeld && !CursorOverToolPaletteUi && !State.m_DrawTextEditing;
+		const bool BezierEnabled = BezierIsActiveTool(State.m_SelectedPrimaryTool) && !State.m_CtrlHeld && !CursorOverToolPaletteUi && !State.m_DrawTextEditing;
+		if(BezierEnabled)
+		{
+			const int Tool = State.m_SelectedPrimaryTool;
+			if(Tool == PRIMARY_TOOL_BEZIER_PEN)
+			{
+				if(Press)
+				{
+					// Click on first anchor closes the path.
+					if(State.m_BezierPath.m_vAnchors.size() >= 3 && !State.m_BezierPath.m_Closed)
+					{
+						const vec2 First = State.m_BezierPath.m_vAnchors.front().m_Pos;
+						if(length(State.m_CursorWorld - First) <= BEZIER_PEN_CLOSE_RADIUS)
+						{
+							State.m_BezierPath.m_Closed = true;
+							State.m_BezierPenDragging = false;
+							return true;
+						}
+					}
+					// Append a fresh corner anchor; drag in OnCursorMove may add handles.
+					SState::SBezierAnchor A;
+					A.m_Pos = State.m_CursorWorld;
+					State.m_BezierPath.m_vAnchors.push_back(A);
+					State.m_BezierPenDragging = true;
+					State.m_BezierPenPressWorld = State.m_CursorWorld;
+					return true;
+				}
+				if(Release)
+				{
+					State.m_BezierPenDragging = false;
+					return true;
+				}
+				return true;
+			}
+			if(Tool == PRIMARY_TOOL_BEZIER_ELLIPSE || Tool == PRIMARY_TOOL_BEZIER_RECT)
+			{
+				if(Press)
+				{
+					State.m_BezierShapeDragging = true;
+					State.m_BezierShapeStartWorld = State.m_CursorWorld;
+					return true;
+				}
+				if(Release && State.m_BezierShapeDragging)
+				{
+					State.m_BezierShapeDragging = false;
+					const vec2 Min = vec2(std::min(State.m_BezierShapeStartWorld.x, State.m_CursorWorld.x),
+						std::min(State.m_BezierShapeStartWorld.y, State.m_CursorWorld.y));
+					const vec2 Max = vec2(std::max(State.m_BezierShapeStartWorld.x, State.m_CursorWorld.x),
+						std::max(State.m_BezierShapeStartWorld.y, State.m_CursorWorld.y));
+					if(Max.x - Min.x >= 2.0f && Max.y - Min.y >= 2.0f)
+					{
+						if(Tool == PRIMARY_TOOL_BEZIER_ELLIPSE)
+							MakeEllipsePath(State.m_BezierPath, Min, Max);
+						else
+							MakeRectanglePath(State.m_BezierPath, Min, Max);
+						// Auto-switch to Edit so the user can immediately tweak the new shape.
+						State.m_SelectedPrimaryTool = PRIMARY_TOOL_BEZIER_EDIT;
+					}
+					return true;
+				}
+				return true;
+			}
+			if(Tool == PRIMARY_TOOL_BEZIER_EDIT)
+			{
+				if(Press)
+				{
+					int Anchor = -1;
+					int Handle = 0;
+					if(BezierEditHitTest(State, State.m_CursorWorld, Anchor, Handle))
+					{
+						State.m_BezierEditAnchor = Anchor;
+						State.m_BezierEditHandle = Handle;
+					}
+					return true;
+				}
+				if(Release)
+				{
+					State.m_BezierEditAnchor = -1;
+					return true;
+				}
+				return true;
+			}
+		}
 		if(DrawEnabled)
 		{
 			if(Press)
@@ -2509,11 +2875,14 @@ void CEditorSpec::OnRender()
 	RenderBrushOverlay(State);
 	RenderDrawTextPreview(State);
 
+	RenderBezierOverlay(State);
+
 	if(State.m_ToolPaletteActive)
 	{
 		RenderToolPalette();
 		if(State.m_SelectedLayer == ELayerGroup::TELE)
 			RenderTeleMenu();
+		RenderBezierMenu(State);
 		RenderLayerDropdownOptions();
 	}
 
@@ -3145,4 +3514,552 @@ ColorRGBA CEditorSpec::DrawColorForDummy(int Dummy) const
 		return Color;
 	}
 	return DRAW_DEFAULT_COLOR;
+}
+
+// ------- Bezier path tool -------
+
+bool CEditorSpec::BezierIsActiveTool(int Tool) const
+{
+	return Tool == PRIMARY_TOOL_BEZIER_PEN || Tool == PRIMARY_TOOL_BEZIER_ELLIPSE ||
+	       Tool == PRIMARY_TOOL_BEZIER_RECT || Tool == PRIMARY_TOOL_BEZIER_EDIT;
+}
+
+bool CEditorSpec::FirstNonAirGameTile(const SState &State, STileSample &OutTile) const
+{
+	const SBrushLayer &GameLayer = State.m_Brush.m_aLayers[static_cast<int>(ELayerGroup::GAME)];
+	for(const STileSample &Tile : GameLayer.m_Tiles)
+	{
+		if(Tile.m_Index != TILE_AIR)
+		{
+			OutTile = Tile;
+			return true;
+		}
+	}
+	return false;
+}
+
+void CEditorSpec::MakeRectanglePath(SState::SBezierPath &Path, const vec2 &Min, const vec2 &Max) const
+{
+	Path.Clear();
+	Path.m_Closed = true;
+	auto Corner = [](const vec2 &Pos) {
+		SState::SBezierAnchor A;
+		A.m_Pos = Pos;
+		return A;
+	};
+	Path.m_vAnchors.push_back(Corner(vec2(Min.x, Min.y)));
+	Path.m_vAnchors.push_back(Corner(vec2(Max.x, Min.y)));
+	Path.m_vAnchors.push_back(Corner(vec2(Max.x, Max.y)));
+	Path.m_vAnchors.push_back(Corner(vec2(Min.x, Max.y)));
+}
+
+void CEditorSpec::MakeEllipsePath(SState::SBezierPath &Path, const vec2 &Min, const vec2 &Max) const
+{
+	Path.Clear();
+	Path.m_Closed = true;
+	const vec2 Center = (Min + Max) * 0.5f;
+	const float Rx = (Max.x - Min.x) * 0.5f;
+	const float Ry = (Max.y - Min.y) * 0.5f;
+	const float Hx = Rx * BEZIER_ELLIPSE_HANDLE_RATIO;
+	const float Hy = Ry * BEZIER_ELLIPSE_HANDLE_RATIO;
+	// Top, right, bottom, left — 4 anchors that approximate a circle/ellipse with cubics.
+	auto Anchor = [](const vec2 &Pos, const vec2 &In, const vec2 &Out) {
+		SState::SBezierAnchor A;
+		A.m_Pos = Pos;
+		A.m_InHandle = In;
+		A.m_OutHandle = Out;
+		return A;
+	};
+	Path.m_vAnchors.push_back(Anchor(vec2(Center.x, Center.y - Ry), vec2(-Hx, 0.0f), vec2(Hx, 0.0f)));
+	Path.m_vAnchors.push_back(Anchor(vec2(Center.x + Rx, Center.y), vec2(0.0f, -Hy), vec2(0.0f, Hy)));
+	Path.m_vAnchors.push_back(Anchor(vec2(Center.x, Center.y + Ry), vec2(Hx, 0.0f), vec2(-Hx, 0.0f)));
+	Path.m_vAnchors.push_back(Anchor(vec2(Center.x - Rx, Center.y), vec2(0.0f, Hy), vec2(0.0f, -Hy)));
+}
+
+void CEditorSpec::TessellatePath(const SState::SBezierPath &Path, std::vector<vec2> &OutPoints) const
+{
+	OutPoints.clear();
+	const size_t N = Path.m_vAnchors.size();
+	if(N == 0)
+		return;
+	if(N == 1)
+	{
+		OutPoints.push_back(Path.m_vAnchors[0].m_Pos);
+		return;
+	}
+	const size_t SegCount = Path.m_Closed ? N : (N - 1);
+	OutPoints.push_back(Path.m_vAnchors[0].m_Pos);
+	for(size_t i = 0; i < SegCount; ++i)
+	{
+		const SState::SBezierAnchor &A = Path.m_vAnchors[i];
+		const SState::SBezierAnchor &B = Path.m_vAnchors[(i + 1) % N];
+		const vec2 P0 = A.m_Pos;
+		const vec2 P1 = A.m_Pos + A.m_OutHandle;
+		const vec2 P2 = B.m_Pos + B.m_InHandle;
+		const vec2 P3 = B.m_Pos;
+		for(int s = 1; s <= BEZIER_TESSELLATION_STEPS; ++s)
+		{
+			const float t = (float)s / (float)BEZIER_TESSELLATION_STEPS;
+			OutPoints.push_back(EvalCubicBezier(P0, P1, P2, P3, t));
+		}
+	}
+}
+
+bool CEditorSpec::BezierEditHitTest(const SState &State, const vec2 &World, int &OutAnchor, int &OutHandle) const
+{
+	OutAnchor = -1;
+	OutHandle = 0;
+	const float R = BEZIER_EDIT_HIT_RADIUS;
+	const float R2 = R * R;
+	const auto &Anchors = State.m_BezierPath.m_vAnchors;
+	// Try handles first so they win over an anchor that's directly under one.
+	for(int i = 0; i < (int)Anchors.size(); ++i)
+	{
+		const SState::SBezierAnchor &A = Anchors[i];
+		const vec2 InWorld = A.m_Pos + A.m_InHandle;
+		const vec2 OutWorld = A.m_Pos + A.m_OutHandle;
+		if(length_squared(World -InWorld) <= R2 && (A.m_InHandle.x != 0.0f || A.m_InHandle.y != 0.0f))
+		{
+			OutAnchor = i;
+			OutHandle = 1;
+			return true;
+		}
+		if(length_squared(World -OutWorld) <= R2 && (A.m_OutHandle.x != 0.0f || A.m_OutHandle.y != 0.0f))
+		{
+			OutAnchor = i;
+			OutHandle = 2;
+			return true;
+		}
+	}
+	for(int i = 0; i < (int)Anchors.size(); ++i)
+	{
+		if(length_squared(World -Anchors[i].m_Pos) <= R2)
+		{
+			OutAnchor = i;
+			OutHandle = 0;
+			return true;
+		}
+	}
+	return false;
+}
+
+bool CEditorSpec::CursorOverBezierMenu(const SState &State) const
+{
+	if(!State.m_ToolPaletteActive)
+		return false;
+	const bool TeleMenu = (State.m_SelectedLayer == ELayerGroup::TELE);
+	const vec2 MenuPos = BezierMenuPos(State.m_ToolPalettePos, TeleMenu);
+	const vec2 MenuSize = BezierMenuSize();
+	return PointInRect(State.m_CursorWorld, MenuPos, MenuSize);
+}
+
+namespace
+{
+	// Even-odd point-in-polygon test against a closed polyline (last point should equal first
+	// for closed paths produced by TessellatePath; we wrap explicitly to be safe).
+	bool PointInPolygon(const std::vector<vec2> &Pts, const vec2 &P)
+	{
+		const size_t N = Pts.size();
+		if(N < 3)
+			return false;
+		bool Inside = false;
+		for(size_t i = 0, j = N - 1; i < N; j = i++)
+		{
+			const vec2 &A = Pts[i];
+			const vec2 &B = Pts[j];
+			if(((A.y > P.y) != (B.y > P.y)))
+			{
+				const float XInt = A.x + (P.y - A.y) * (B.x - A.x) / (B.y - A.y);
+				if(P.x < XInt)
+					Inside = !Inside;
+			}
+		}
+		return Inside;
+	}
+
+	float DistanceSquaredPointSegment(const vec2 &P, const vec2 &A, const vec2 &B)
+	{
+		const vec2 AB = B - A;
+		const float L2 = length_squared(AB);
+		if(L2 <= 1e-6f)
+			return length_squared(P - A);
+		float t = dot(P - A, AB) / L2;
+		t = std::clamp(t, 0.0f, 1.0f);
+		const vec2 Proj = A + AB * t;
+		return length_squared(P - Proj);
+	}
+
+	float MinDistanceSquaredToPolyline(const std::vector<vec2> &Pts, const vec2 &P)
+	{
+		if(Pts.size() < 2)
+		{
+			return Pts.empty() ? std::numeric_limits<float>::infinity() : length_squared(P - Pts[0]);
+		}
+		float Best = std::numeric_limits<float>::infinity();
+		for(size_t i = 1; i < Pts.size(); ++i)
+		{
+			const float D = DistanceSquaredPointSegment(P, Pts[i - 1], Pts[i]);
+			if(D < Best)
+				Best = D;
+		}
+		return Best;
+	}
+}
+
+// Send a rectangular tile pattern covering the path's bbox, with `Tile` filling
+// every cell that the membership predicate accepts and TILE_AIR (no-op) elsewhere.
+// Uses non-destructive mode so air cells don't clobber existing map content.
+namespace
+{
+	bool SubmitBezierTilePattern(CGameClient *pGameClient, const ivec2 &TopLeft, int Width, int Height,
+		const std::vector<unsigned char> &Mask, int FillIndex, int FillFlags)
+	{
+		const int TileCount = Width * Height;
+		if(TileCount <= 0 || (int)Mask.size() != TileCount)
+			return false;
+		std::vector<CGameClient::STileToolLayer> Payload(TileCount);
+		bool AnyHit = false;
+		for(int i = 0; i < TileCount; ++i)
+		{
+			if(Mask[i])
+			{
+				Payload[i].m_Index = FillIndex;
+				Payload[i].m_Flags = FillFlags;
+				AnyHit = true;
+			}
+			else
+			{
+				Payload[i].m_Index = TILE_AIR;
+				Payload[i].m_Flags = 0;
+			}
+		}
+		if(!AnyHit)
+			return false;
+		// Destructive=false: AIR cells in the payload leave the existing tile alone,
+		// so we only overwrite cells covered by the path.
+		return pGameClient->SendTileToolPatternRequest(LAYER_GAME, TopLeft, Width, Height, Payload.data(), TileCount, /*Destructive=*/false);
+	}
+
+	// Compute world-space bbox for a tessellated polyline, with optional padding.
+	void PolylineBounds(const std::vector<vec2> &Pts, vec2 &OutMin, vec2 &OutMax)
+	{
+		OutMin = vec2(0.0f, 0.0f);
+		OutMax = vec2(0.0f, 0.0f);
+		if(Pts.empty())
+			return;
+		OutMin = Pts[0];
+		OutMax = Pts[0];
+		for(const vec2 &P : Pts)
+		{
+			OutMin.x = std::min(OutMin.x, P.x);
+			OutMin.y = std::min(OutMin.y, P.y);
+			OutMax.x = std::max(OutMax.x, P.x);
+			OutMax.y = std::max(OutMax.y, P.y);
+		}
+	}
+}
+
+bool CEditorSpec::ApplyBezierFill(SState &State)
+{
+	if(State.m_BezierPath.m_vAnchors.size() < 3 || !State.m_BezierPath.m_Closed)
+		return false;
+	STileSample Tile;
+	if(!FirstNonAirGameTile(State, Tile))
+		return false;
+
+	std::vector<vec2> Pts;
+	TessellatePath(State.m_BezierPath, Pts);
+	if(Pts.size() < 3)
+		return false;
+
+	const CCollision *pCollision = GameClient()->Collision();
+	if(!pCollision)
+		return false;
+	const int MapW = pCollision->GetWidth();
+	const int MapH = pCollision->GetHeight();
+	if(MapW <= 0 || MapH <= 0)
+		return false;
+
+	vec2 BMin, BMax;
+	PolylineBounds(Pts, BMin, BMax);
+	const int X0 = std::max(0, (int)std::floor(BMin.x / 32.0f));
+	const int Y0 = std::max(0, (int)std::floor(BMin.y / 32.0f));
+	const int X1 = std::min(MapW - 1, (int)std::floor(BMax.x / 32.0f));
+	const int Y1 = std::min(MapH - 1, (int)std::floor(BMax.y / 32.0f));
+	if(X0 > X1 || Y0 > Y1)
+		return false;
+	const int W = X1 - X0 + 1;
+	const int H = Y1 - Y0 + 1;
+	std::vector<unsigned char> Mask((size_t)W * H, 0);
+	for(int ty = 0; ty < H; ++ty)
+	{
+		for(int tx = 0; tx < W; ++tx)
+		{
+			const vec2 Center((X0 + tx) * 32.0f + 16.0f, (Y0 + ty) * 32.0f + 16.0f);
+			if(PointInPolygon(Pts, Center))
+				Mask[ty * W + tx] = 1;
+		}
+	}
+	return SubmitBezierTilePattern(GameClient(), ivec2(X0, Y0), W, H, Mask, Tile.m_Index, Tile.m_Flags);
+}
+
+void CEditorSpec::RenderBezierOverlay(const SState &State) const
+{
+	const bool ShowPath = !State.m_BezierPath.Empty() || State.m_BezierShapeDragging;
+	if(!ShowPath)
+		return;
+
+	const ColorRGBA CurveColor(0.95f, 0.55f, 0.25f, 0.95f); // matches palette handle accent
+	const ColorRGBA AnchorColor(0.2f, 0.7f, 1.0f, 0.95f);
+	const ColorRGBA HandleColor(1.0f, 0.85f, 0.3f, 0.95f);
+	const ColorRGBA HandleLineColor(1.0f, 0.85f, 0.3f, 0.45f);
+	const float Zoom = std::max(0.25f, GameClient()->m_Camera.m_Zoom);
+	const float LineHalf = std::max(1.5f, 1.5f * Zoom);
+	const float AnchorRadius = std::max(4.0f, 5.0f * Zoom);
+	const float HandleRadius = std::max(3.0f, 4.0f * Zoom);
+	const float HandleLineHalf = std::max(0.5f, 0.75f * Zoom);
+
+	auto DrawSegmentQuad = [&](const vec2 &A, const vec2 &B, float Half, const ColorRGBA &Color) {
+		const vec2 Dir = B - A;
+		const float Len = length(Dir);
+		if(Len < 1e-3f)
+			return;
+		const vec2 N = vec2(-Dir.y, Dir.x) / Len * Half;
+		Graphics()->TextureClear();
+		Graphics()->QuadsBegin();
+		Graphics()->SetColor(Color.r, Color.g, Color.b, Color.a);
+		IGraphics::CFreeformItem Item(
+			A.x - N.x, A.y - N.y,
+			A.x + N.x, A.y + N.y,
+			B.x - N.x, B.y - N.y,
+			B.x + N.x, B.y + N.y);
+		Graphics()->QuadsDrawFreeform(&Item, 1);
+		Graphics()->QuadsEnd();
+	};
+
+	// Live shape-drag preview: just draw the bbox outline.
+	if(State.m_BezierShapeDragging)
+	{
+		const vec2 Min = vec2(std::min(State.m_BezierShapeStartWorld.x, State.m_CursorWorld.x),
+			std::min(State.m_BezierShapeStartWorld.y, State.m_CursorWorld.y));
+		const vec2 Max = vec2(std::max(State.m_BezierShapeStartWorld.x, State.m_CursorWorld.x),
+			std::max(State.m_BezierShapeStartWorld.y, State.m_CursorWorld.y));
+		const ColorRGBA PreviewColor(0.95f, 0.55f, 0.25f, 0.7f);
+		DrawSegmentQuad(vec2(Min.x, Min.y), vec2(Max.x, Min.y), LineHalf, PreviewColor);
+		DrawSegmentQuad(vec2(Max.x, Min.y), vec2(Max.x, Max.y), LineHalf, PreviewColor);
+		DrawSegmentQuad(vec2(Max.x, Max.y), vec2(Min.x, Max.y), LineHalf, PreviewColor);
+		DrawSegmentQuad(vec2(Min.x, Max.y), vec2(Min.x, Min.y), LineHalf, PreviewColor);
+		// Optional: also draw an inscribed ellipse preview if the ellipse tool is selected,
+		// but that doubles the line drawing for marginal benefit. Skip for now.
+	}
+
+	if(State.m_BezierPath.Empty())
+		return;
+
+	// Tessellated curve.
+	std::vector<vec2> Pts;
+	TessellatePath(State.m_BezierPath, Pts);
+	if(State.m_BezierPath.m_Closed && Pts.size() >= 2)
+	{
+		Pts.push_back(Pts.front());
+	}
+	for(size_t i = 1; i < Pts.size(); ++i)
+	{
+		DrawSegmentQuad(Pts[i - 1], Pts[i], LineHalf, CurveColor);
+	}
+
+	// Pen tool: live preview from last placed anchor toward the cursor.
+	if(State.m_SelectedPrimaryTool == PRIMARY_TOOL_BEZIER_PEN && !State.m_BezierPath.m_Closed && !State.m_BezierPath.Empty() && !State.m_BezierPenDragging)
+	{
+		const vec2 Last = State.m_BezierPath.m_vAnchors.back().m_Pos;
+		DrawSegmentQuad(Last, State.m_CursorWorld, LineHalf * 0.6f, ColorRGBA(CurveColor.r, CurveColor.g, CurveColor.b, 0.45f));
+	}
+
+	// Handles: draw lines from anchor to handle, plus handle endpoints. Show in Edit and Pen modes.
+	const bool ShowHandles = State.m_SelectedPrimaryTool == PRIMARY_TOOL_BEZIER_EDIT ||
+	                        State.m_SelectedPrimaryTool == PRIMARY_TOOL_BEZIER_PEN;
+	if(ShowHandles)
+	{
+		for(const SState::SBezierAnchor &A : State.m_BezierPath.m_vAnchors)
+		{
+			if(A.m_InHandle.x != 0.0f || A.m_InHandle.y != 0.0f)
+			{
+				const vec2 H = A.m_Pos + A.m_InHandle;
+				DrawSegmentQuad(A.m_Pos, H, HandleLineHalf, HandleLineColor);
+				Graphics()->DrawRect(H.x - HandleRadius, H.y - HandleRadius, HandleRadius * 2.0f, HandleRadius * 2.0f, HandleColor, IGraphics::CORNER_ALL, HandleRadius);
+			}
+			if(A.m_OutHandle.x != 0.0f || A.m_OutHandle.y != 0.0f)
+			{
+				const vec2 H = A.m_Pos + A.m_OutHandle;
+				DrawSegmentQuad(A.m_Pos, H, HandleLineHalf, HandleLineColor);
+				Graphics()->DrawRect(H.x - HandleRadius, H.y - HandleRadius, HandleRadius * 2.0f, HandleRadius * 2.0f, HandleColor, IGraphics::CORNER_ALL, HandleRadius);
+			}
+		}
+	}
+
+	// Anchors: filled circles on top.
+	for(const SState::SBezierAnchor &A : State.m_BezierPath.m_vAnchors)
+	{
+		Graphics()->DrawRect(A.m_Pos.x - AnchorRadius, A.m_Pos.y - AnchorRadius, AnchorRadius * 2.0f, AnchorRadius * 2.0f, AnchorColor, IGraphics::CORNER_ALL, AnchorRadius);
+	}
+}
+
+void CEditorSpec::RenderBezierMenu(const SState &State) const
+{
+	const bool TeleMenuVisible = (State.m_SelectedLayer == ELayerGroup::TELE);
+	const vec2 MenuPos = BezierMenuPos(State.m_ToolPalettePos, TeleMenuVisible);
+	const vec2 MenuSize = BezierMenuSize();
+	Graphics()->DrawRect(MenuPos.x, MenuPos.y, MenuSize.x, MenuSize.y,
+		ColorRGBA(0.05f, 0.05f, 0.05f, 0.9f), IGraphics::CORNER_ALL, BEZIER_MENU_ROUNDING);
+
+	const int Tools[BEZIER_NUM_TOOLS] = {
+		PRIMARY_TOOL_BEZIER_PEN,
+		PRIMARY_TOOL_BEZIER_ELLIPSE,
+		PRIMARY_TOOL_BEZIER_RECT,
+		PRIMARY_TOOL_BEZIER_EDIT,
+	};
+	const char *aLabels[BEZIER_NUM_TOOLS] = {"Pen", "Ellipse", "Rect", "Edit"};
+	for(int i = 0; i < BEZIER_NUM_TOOLS; ++i)
+	{
+		const vec2 Pos = BezierToolButtonPos(State.m_ToolPalettePos, TeleMenuVisible, i);
+		const vec2 Size = BezierToolButtonSize();
+		const bool Selected = State.m_SelectedPrimaryTool == Tools[i];
+		const bool Hover = PointInRect(State.m_CursorWorld, Pos, Size);
+		ColorRGBA Color;
+		if(Selected)
+			Color = Hover ? ColorRGBA(0.32f, 0.7f, 1.0f, 0.95f) : ColorRGBA(0.2f, 0.55f, 1.0f, 0.9f);
+		else
+			Color = Hover ? ColorRGBA(0.32f, 0.32f, 0.32f, 0.9f) : ColorRGBA(0.2f, 0.2f, 0.2f, 0.85f);
+		Graphics()->DrawRect(Pos.x, Pos.y, Size.x, Size.y, Color, IGraphics::CORNER_ALL, 6.0f);
+		TextRender()->TextColor(ColorRGBA(1.0f, 1.0f, 1.0f, 1.0f));
+		TextRender()->TextOutlineColor(ColorRGBA(0.0f, 0.0f, 0.0f, 0.3f));
+		const float FontSize = 13.0f;
+		const float TextW = TextRender()->TextWidth(FontSize, aLabels[i]);
+		const float TextX = Pos.x + (Size.x - TextW) * 0.5f;
+		const float TextY = Pos.y + (Size.y - FontSize) * 0.5f;
+		TextRender()->Text(TextX, TextY, FontSize, aLabels[i]);
+	}
+
+	const bool HasPath = !State.m_BezierPath.Empty();
+	const bool ClosedPath = HasPath && State.m_BezierPath.m_Closed;
+	struct SAction
+	{
+		const char *m_pLabel;
+		bool m_Enabled;
+		ColorRGBA m_Active;
+	};
+	const SAction aActions[BEZIER_NUM_ACTIONS] = {
+		{"Clear", HasPath, ColorRGBA(0.85f, 0.4f, 0.3f, 0.9f)},
+		{"Fill", ClosedPath, ColorRGBA(0.4f, 0.8f, 0.4f, 0.9f)},
+		{"Stroke", HasPath, ColorRGBA(0.95f, 0.7f, 0.2f, 0.9f)},
+	};
+	for(int i = 0; i < BEZIER_NUM_ACTIONS; ++i)
+	{
+		const vec2 Pos = BezierActionButtonPos(State.m_ToolPalettePos, TeleMenuVisible, i);
+		const vec2 Size = BezierActionButtonSize();
+		const bool Hover = aActions[i].m_Enabled && PointInRect(State.m_CursorWorld, Pos, Size);
+		ColorRGBA Color;
+		if(!aActions[i].m_Enabled)
+			Color = ColorRGBA(0.15f, 0.15f, 0.15f, 0.7f);
+		else if(Hover)
+			Color = aActions[i].m_Active;
+		else
+			Color = ColorRGBA(aActions[i].m_Active.r * 0.75f, aActions[i].m_Active.g * 0.75f, aActions[i].m_Active.b * 0.75f, 0.85f);
+		Graphics()->DrawRect(Pos.x, Pos.y, Size.x, Size.y, Color, IGraphics::CORNER_ALL, 6.0f);
+		TextRender()->TextColor(ColorRGBA(1.0f, 1.0f, 1.0f, aActions[i].m_Enabled ? 1.0f : 0.5f));
+		TextRender()->TextOutlineColor(ColorRGBA(0.0f, 0.0f, 0.0f, 0.3f));
+		const float FontSize = 13.0f;
+		const float TextW = TextRender()->TextWidth(FontSize, aActions[i].m_pLabel);
+		const float TextX = Pos.x + (Size.x - TextW) * 0.5f;
+		const float TextY = Pos.y + (Size.y - FontSize) * 0.5f;
+		TextRender()->Text(TextX, TextY, FontSize, aActions[i].m_pLabel);
+	}
+
+	// Stroke width spinner: minus, value, plus.
+	const vec2 MinusPos = BezierSpinnerMinusPos(State.m_ToolPalettePos, TeleMenuVisible);
+	const vec2 ValuePos = BezierSpinnerValuePos(State.m_ToolPalettePos, TeleMenuVisible);
+	const vec2 PlusPos = BezierSpinnerPlusPos(State.m_ToolPalettePos, TeleMenuVisible);
+	const vec2 BtnSize = BezierSpinnerButtonSize();
+	const vec2 ValueSize = BezierSpinnerValueSize();
+	auto SpinnerButton = [&](const vec2 &Pos, const char *pLabel) {
+		const bool Hover = PointInRect(State.m_CursorWorld, Pos, BtnSize);
+		const ColorRGBA Color = Hover ? ColorRGBA(0.32f, 0.32f, 0.32f, 0.95f) : ColorRGBA(0.2f, 0.2f, 0.2f, 0.85f);
+		Graphics()->DrawRect(Pos.x, Pos.y, BtnSize.x, BtnSize.y, Color, IGraphics::CORNER_ALL, 6.0f);
+		TextRender()->TextColor(ColorRGBA(1.0f, 1.0f, 1.0f, 1.0f));
+		TextRender()->TextOutlineColor(ColorRGBA(0.0f, 0.0f, 0.0f, 0.3f));
+		const float FontSize = BtnSize.y * 0.6f;
+		const float W = TextRender()->TextWidth(FontSize, pLabel);
+		TextRender()->Text(Pos.x + (BtnSize.x - W) * 0.5f, Pos.y + (BtnSize.y - FontSize) * 0.5f, FontSize, pLabel);
+	};
+	SpinnerButton(MinusPos, "-");
+	SpinnerButton(PlusPos, "+");
+
+	Graphics()->DrawRect(ValuePos.x, ValuePos.y, ValueSize.x, ValueSize.y,
+		ColorRGBA(0.18f, 0.18f, 0.18f, 0.85f), IGraphics::CORNER_ALL, 6.0f);
+	const int Width = std::clamp(g_Config.m_ClBezierStrokeWidth, 1, 32);
+	char aBuf[32];
+	str_format(aBuf, sizeof(aBuf), "%d px", Width);
+	TextRender()->TextColor(ColorRGBA(1.0f, 1.0f, 1.0f, 0.95f));
+	TextRender()->TextOutlineColor(ColorRGBA(0.0f, 0.0f, 0.0f, 0.3f));
+	const float FontSize = 13.0f;
+	const float TextW = TextRender()->TextWidth(FontSize, aBuf);
+	TextRender()->Text(ValuePos.x + (ValueSize.x - TextW) * 0.5f, ValuePos.y + (ValueSize.y - FontSize) * 0.5f, FontSize, aBuf);
+	TextRender()->TextColor(TextRender()->DefaultTextColor());
+	TextRender()->TextOutlineColor(TextRender()->DefaultTextOutlineColor());
+}
+
+bool CEditorSpec::ApplyBezierStroke(SState &State)
+{
+	if(State.m_BezierPath.m_vAnchors.size() < 2)
+		return false;
+	STileSample Tile;
+	if(!FirstNonAirGameTile(State, Tile))
+		return false;
+
+	std::vector<vec2> Pts;
+	TessellatePath(State.m_BezierPath, Pts);
+	if(State.m_BezierPath.m_Closed && Pts.size() >= 2)
+	{
+		// Close the polyline so the stroke covers the seam between last and first anchor.
+		Pts.push_back(Pts.front());
+	}
+	if(Pts.size() < 2)
+		return false;
+
+	const CCollision *pCollision = GameClient()->Collision();
+	if(!pCollision)
+		return false;
+	const int MapW = pCollision->GetWidth();
+	const int MapH = pCollision->GetHeight();
+	if(MapW <= 0 || MapH <= 0)
+		return false;
+
+	const int StrokeWidthTiles = std::clamp(g_Config.m_ClBezierStrokeWidth, 1, 32);
+	const float Radius = StrokeWidthTiles * 16.0f; // half stroke width in pixels
+	const float Pad = Radius + 16.0f;
+	vec2 BMin, BMax;
+	PolylineBounds(Pts, BMin, BMax);
+	BMin -= vec2(Pad, Pad);
+	BMax += vec2(Pad, Pad);
+
+	const int X0 = std::max(0, (int)std::floor(BMin.x / 32.0f));
+	const int Y0 = std::max(0, (int)std::floor(BMin.y / 32.0f));
+	const int X1 = std::min(MapW - 1, (int)std::floor(BMax.x / 32.0f));
+	const int Y1 = std::min(MapH - 1, (int)std::floor(BMax.y / 32.0f));
+	if(X0 > X1 || Y0 > Y1)
+		return false;
+	const int W = X1 - X0 + 1;
+	const int H = Y1 - Y0 + 1;
+	const float R2 = Radius * Radius;
+	std::vector<unsigned char> Mask((size_t)W * H, 0);
+	for(int ty = 0; ty < H; ++ty)
+	{
+		for(int tx = 0; tx < W; ++tx)
+		{
+			const vec2 Center((X0 + tx) * 32.0f + 16.0f, (Y0 + ty) * 32.0f + 16.0f);
+			if(MinDistanceSquaredToPolyline(Pts, Center) <= R2)
+				Mask[ty * W + tx] = 1;
+		}
+	}
+	return SubmitBezierTilePattern(GameClient(), ivec2(X0, Y0), W, H, Mask, Tile.m_Index, Tile.m_Flags);
 }

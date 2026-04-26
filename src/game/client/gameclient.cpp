@@ -91,41 +91,6 @@
 
 using namespace std::chrono_literals;
 
-namespace
-{
-	int ClampTileIndex(int Index)
-	{
-		return std::clamp(Index, 0, 255);
-	}
-
-	int TileToolCustomTileIndexForSlot(int Slot)
-	{
-		switch(Slot)
-		{
-		case 1:
-			return ClampTileIndex(g_Config.m_ClCustomTilePick1);
-		case 2:
-			return ClampTileIndex(g_Config.m_ClCustomTilePick2);
-		default:
-			return TILE_AIR;
-		}
-	}
-}
-
-const std::array<CGameClient::STileToolPaletteEntry, CGameClient::TILE_TOOL_PALETTE_SIZE> CGameClient::ms_aTileToolPalette = {{{"hook", CGameClient::STileToolLayer{TILE_SOLID, 0}, true, CGameClient::STileToolLayer{TILE_AIR, 0}, 0, 0},
-	{"death", CGameClient::STileToolLayer{TILE_DEATH, 0}, true, CGameClient::STileToolLayer{TILE_AIR, 0}, 0, 0},
-	{"unhook", CGameClient::STileToolLayer{TILE_NOHOOK, 0}, true, CGameClient::STileToolLayer{TILE_AIR, 0}, 0, 0},
-	{"ht", CGameClient::STileToolLayer{TILE_NOHOOK, 0}, true, CGameClient::STileToolLayer{TILE_THROUGH_CUT, 0}, 0, 0},
-	{"freeze", CGameClient::STileToolLayer{TILE_FREEZE, 0}, true, CGameClient::STileToolLayer{TILE_AIR, 0}, 0, 0},
-	{"unfreeze", CGameClient::STileToolLayer{TILE_UNFREEZE, 0}, true, CGameClient::STileToolLayer{TILE_AIR, 0}, 0, 0},
-	{"deep", CGameClient::STileToolLayer{TILE_DFREEZE, 0}, true, CGameClient::STileToolLayer{TILE_AIR, 0}, 0, 0},
-	{"undeep", CGameClient::STileToolLayer{TILE_DUNFREEZE, 0}, true, CGameClient::STileToolLayer{TILE_AIR, 0}, 0, 0},
-	{"air", CGameClient::STileToolLayer{TILE_AIR, 0}, true, CGameClient::STileToolLayer{TILE_AIR, 0}, 0, 0},
-	{"start", CGameClient::STileToolLayer{TILE_START, 0}, true, CGameClient::STileToolLayer{TILE_AIR, 0}, 0, 0},
-	{"finish", CGameClient::STileToolLayer{TILE_FINISH, 0}, true, CGameClient::STileToolLayer{TILE_AIR, 0}, 0, 0},
-	{"custom 1", CGameClient::STileToolLayer{TILE_AIR, 0}, true, CGameClient::STileToolLayer{TILE_AIR, 0}, 1, 0},
-	{"custom 2", CGameClient::STileToolLayer{TILE_AIR, 0}, true, CGameClient::STileToolLayer{TILE_AIR, 0}, 2, 0}}};
-
 const char *CGameClient::Version() const { return GAME_VERSION; }
 const char *CGameClient::NetVersion() const { return GAME_NETVERSION; }
 const char *CGameClient::NetVersion7() const { return GAME_NETVERSION7; }
@@ -236,7 +201,6 @@ void CGameClient::OnConsoleInit()
 	Console()->Register("kill", "", CFGFLAG_CLIENT, ConKill, this, "Kill yourself to restart");
 	Console()->Register("ready_change", "", CFGFLAG_CLIENT, ConReadyChange7, this, "Change ready state (0.7 only)");
 	Console()->Register("cl_request_tile_change", "i[layer]i[x]i[y]i[index]i[flags]", CFGFLAG_CLIENT, ConRequestTileChange, this, "Request the server to modify a tile (test feature)");
-	Console()->Register("tiletool_clear_cursor", "", CFGFLAG_CLIENT, ConTileToolClearCursor, this, "Replace the tile under the tile tool cursor with air on game/front layers");
 	Console()->Register("tiletool_fill_rect", "i[layer]i[x]i[y]i[w]i[h]i[index]i[flags]", CFGFLAG_CLIENT, ConTileToolFillRect, this, "Fill a rectangle in the specified layer using the selected tile index/flags");
 	Console()->Register("tiletool_paste_pattern", "i[layer]i[x]i[y]i[w]i[h]s[pattern_base64]", CFGFLAG_CLIENT, ConTileToolPastePattern, this, "Paste a base64-encoded tile pattern (pairs of index/flags bytes) into the selected layer");
 
@@ -658,13 +622,6 @@ void CGameClient::OnDummySwap()
 	const int PrevDummyFire = m_DummyInput.m_Fire;
 	m_DummyInput = m_Controls.m_aInputData[!g_Config.m_ClDummy];
 	m_Controls.m_aInputData[g_Config.m_ClDummy].m_Fire = PrevDummyFire;
-	const int NewDummy = g_Config.m_ClDummy;
-	const int OldDummy = !NewDummy;
-	const ivec2 InvalidCursor(-1, -1);
-	if(m_aLocalIds[OldDummy] >= 0)
-	{
-		UpdateTileCursorNetworkState(false, InvalidCursor, OldDummy);
-	}
 	m_IsDummySwapping = 1;
 }
 
@@ -842,14 +799,6 @@ void CGameClient::OnReset()
 	m_GameWorld.m_WorldConfig.m_InfiniteAmmo = true;
 	m_PredictedWorld.CopyWorld(&m_GameWorld);
 	m_PrevPredictedWorld.CopyWorld(&m_PredictedWorld);
-	ResetTileToolDrag();
-	ResetTileToolClearDrag();
-	for(int Dummy = 0; Dummy < NUM_DUMMIES; ++Dummy)
-	{
-		m_aTileToolCursorActive[Dummy] = false;
-		m_aTileToolLastCursorSent[Dummy] = ivec2(-1, -1);
-		m_aTileToolSelectedPaletteIndex[Dummy] = 0;
-	}
 
 	m_vSnapEntities.clear();
 
@@ -1003,22 +952,9 @@ void CGameClient::OnRender()
 
 	UpdateSpectatorCursor();
 
-	bool RenderedTileToolIndicator = false;
 	// render all systems
 	for(auto &pComponent : m_vpAll)
-	{
 		pComponent->OnRender();
-		if(!RenderedTileToolIndicator && pComponent == &m_DamageInd)
-		{
-			RenderTileToolTargetIndicator();
-			RenderedTileToolIndicator = true;
-		}
-	}
-
-	if(!RenderedTileToolIndicator)
-	{
-		RenderTileToolTargetIndicator();
-	}
 
 	// clear all events/input for this frame
 	Input()->Clear();
@@ -1519,24 +1455,6 @@ void CGameClient::OnMessage(int MsgId, CUnpacker *pUnpacker, int Conn, bool Dumm
 		TeleTile.m_Type = pMsg->m_Index == TILE_AIR ? 0 : pMsg->m_Index;
 		TeleTile.m_Number = std::clamp(pMsg->m_Number, 0, 255);
 		MarkTileDirty(pTelemap, pMsg->m_X, pMsg->m_Y);
-	}
-	else if(MsgId == NETMSGTYPE_SV_TILECURSOR)
-	{
-		const auto *pMsg = static_cast<CNetMsg_Sv_TileCursor *>(pRawMsg);
-		if(pMsg->m_ClientId >= 0 && pMsg->m_ClientId < MAX_CLIENTS)
-		{
-			CClientData &ClientData = m_aClients[pMsg->m_ClientId];
-			if(pMsg->m_Active)
-			{
-				ClientData.m_TileCursorActive = true;
-				ClientData.m_TileCursor = ivec2(pMsg->m_X, pMsg->m_Y);
-			}
-			else
-			{
-				ClientData.m_TileCursorActive = false;
-				ClientData.m_TileCursor = ivec2(-1, -1);
-			}
-		}
 	}
 	else if(MsgId == NETMSGTYPE_SV_EDITORSPECCURSOR)
 	{
@@ -3442,8 +3360,6 @@ void CGameClient::CClientData::Reset()
 	m_FreezeEnd = 0;
 	m_DeepFrozen = false;
 	m_LiveFrozen = false;
-	m_TileCursorActive = false;
-	m_TileCursor = ivec2(-1, -1);
 	m_EditorSpecCursorActive = false;
 	m_EditorSpecCursor = vec2(0.0f, 0.0f);
 
@@ -5070,34 +4986,6 @@ void CGameClient::ConRequestTileChange(IConsole::IResult *pResult, void *pUserDa
 	}
 }
 
-void CGameClient::ConTileToolClearCursor(IConsole::IResult *pResult, void *pUserData)
-{
-	CGameClient *pSelf = static_cast<CGameClient *>(pUserData);
-	if(!pSelf->IsLocalTileToolEquipped())
-	{
-		pSelf->Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "client", "Tile tool not equipped");
-		return;
-	}
-
-	ivec2 Tile;
-	if(!pSelf->GetTileToolCursorTile(Tile))
-	{
-		pSelf->Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "client", "Tile cursor is outside the map");
-		return;
-	}
-
-	if(!pSelf->SendTileToolLayerRequest(LAYER_GAME, Tile, CGameClient::STileToolLayer{TILE_AIR, 0}))
-	{
-		return;
-	}
-
-	const CLayers *pLayers = pSelf->Layers();
-	if(pLayers && pLayers->GetTilemapForLayer(LAYER_FRONT))
-	{
-		pSelf->SendTileToolLayerRequest(LAYER_FRONT, Tile, CGameClient::STileToolLayer{TILE_AIR, 0});
-	}
-}
-
 void CGameClient::ConTileToolFillRect(IConsole::IResult *pResult, void *pUserData)
 {
 	CGameClient *pSelf = static_cast<CGameClient *>(pUserData);
@@ -5154,271 +5042,6 @@ void CGameClient::ConTileToolPastePattern(IConsole::IResult *pResult, void *pUse
 	if(!pSelf->SendTileToolPatternRequest(Layer, TopLeft, Width, Height, Tiles.data(), TileCount))
 	{
 		pSelf->Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "client", "Failed to send tile pattern paste request");
-	}
-}
-
-bool CGameClient::IsLocalTileToolEquipped() const
-{
-	if(Client()->State() != IClient::STATE_ONLINE)
-	{
-		return false;
-	}
-
-	const CNetObj_Character *pLocalChar = m_Snap.m_pLocalCharacter;
-	return pLocalChar && pLocalChar->m_Weapon == WEAPON_TILE;
-}
-
-int CGameClient::TileToolSelectionIndex(int Dummy) const
-{
-	if(Dummy < 0 || Dummy >= NUM_DUMMIES)
-	{
-		return 0;
-	}
-
-	return std::clamp(m_aTileToolSelectedPaletteIndex[Dummy], 0, TILE_TOOL_PALETTE_SIZE - 1);
-}
-
-void CGameClient::SetTileToolSelectionIndex(int EntryIndex, int Dummy)
-{
-	if(Dummy < 0 || Dummy >= NUM_DUMMIES)
-	{
-		return;
-	}
-
-	const int ClampedIndex = std::clamp(EntryIndex, 0, TILE_TOOL_PALETTE_SIZE - 1);
-	if(m_aTileToolSelectedPaletteIndex[Dummy] == ClampedIndex)
-	{
-		return;
-	}
-
-	m_aTileToolSelectedPaletteIndex[Dummy] = ClampedIndex;
-	ResetTileToolDrag();
-}
-
-CGameClient::STileToolLayer CGameClient::TileToolLayerForEntry(int EntryIndex, bool FrontLayer) const
-{
-	if(EntryIndex < 0 || EntryIndex >= TILE_TOOL_PALETTE_SIZE)
-	{
-		return STileToolLayer{};
-	}
-
-	const STileToolPaletteEntry &Entry = ms_aTileToolPalette[EntryIndex];
-	STileToolLayer Layer = FrontLayer ? Entry.m_FrontLayer : Entry.m_GameLayer;
-	const int CustomSlot = FrontLayer ? Entry.m_CustomFrontTileSlot : Entry.m_CustomGameTileSlot;
-	if(CustomSlot > 0)
-	{
-		Layer.m_Index = TileToolCustomTileIndexForSlot(CustomSlot);
-	}
-	return Layer;
-}
-
-int CGameClient::TileToolTileHash(const ivec2 &TilePos) const
-{
-	const int MapWidth = Collision()->GetWidth();
-	const int MapHeight = Collision()->GetHeight();
-	if(MapWidth <= 0 || MapHeight <= 0)
-	{
-		return -1;
-	}
-	if(TilePos.x < 0 || TilePos.x >= MapWidth || TilePos.y < 0 || TilePos.y >= MapHeight)
-	{
-		return -1;
-	}
-	return TilePos.y * MapWidth + TilePos.x;
-}
-
-bool CGameClient::ClampTileToolTarget(const vec2 &WorldTargetPos, ivec2 &OutTile) const
-{
-	const int MapWidth = Collision()->GetWidth();
-	const int MapHeight = Collision()->GetHeight();
-	if(MapWidth <= 0 || MapHeight <= 0)
-	{
-		return false;
-	}
-
-	const int TileX = std::clamp(static_cast<int>(WorldTargetPos.x / 32.0f), 0, MapWidth - 1);
-	const int TileY = std::clamp(static_cast<int>(WorldTargetPos.y / 32.0f), 0, MapHeight - 1);
-	OutTile = ivec2(TileX, TileY);
-	return true;
-}
-
-bool CGameClient::GetTileToolCursorTile(ivec2 &OutTile) const
-{
-	const int ControlledDummy = g_Config.m_ClDummy;
-	const vec2 TargetPos = m_Controls.m_aTargetPos[ControlledDummy];
-	const vec2 LocalPos = m_LocalCharacterPos;
-	const float Zoom = m_Camera.m_Zoom;
-	const vec2 ZoomedTarget = LocalPos + (TargetPos - LocalPos) * Zoom;
-	return ClampTileToolTarget(ZoomedTarget, OutTile);
-}
-
-void CGameClient::ResetTileToolDragState(STileToolDragState &State)
-{
-	State.m_Active = false;
-	State.m_LastTile = ivec2(-1, -1);
-	State.m_LastSentTile = ivec2(-1, -1);
-	State.m_EditedTiles.clear();
-}
-
-void CGameClient::ResetTileToolDrag()
-{
-	ResetTileToolDragState(m_TileToolPaintDrag);
-}
-
-void CGameClient::ResetTileToolClearDrag()
-{
-	ResetTileToolDragState(m_TileToolClearDrag);
-}
-
-bool CGameClient::SendTileToolLayerRequest(int LayerIndex, const ivec2 &TilePos, const STileToolLayer &TileLayer) const
-{
-	CNetMsg_Cl_RequestTileChange Msg;
-	Msg.m_Layer = LayerIndex;
-	Msg.m_X = TilePos.x;
-	Msg.m_Y = TilePos.y;
-	Msg.m_Index = TileLayer.m_Index;
-	Msg.m_Flags = TileLayer.m_Flags;
-	if(Client()->SendPackMsgActive(&Msg, MSGFLAG_VITAL))
-	{
-		Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "client", "Failed to send tile change request");
-		return false;
-	}
-	return true;
-}
-
-bool CGameClient::SendTileToolPaintRequest(const ivec2 &TilePos, STileToolDragState &State)
-{
-	const int ControlledDummy = g_Config.m_ClDummy;
-	const int SelectionIndex = TileToolSelectionIndex(ControlledDummy);
-	const STileToolPaletteEntry &Entry = ms_aTileToolPalette[SelectionIndex];
-	const STileToolLayer DesiredGameLayer = TileToolLayerForEntry(SelectionIndex, false);
-	STileToolLayer GameLayerToSend = DesiredGameLayer;
-	STileToolLayer FrontLayerToSend = Entry.m_SetFrontLayer ? TileToolLayerForEntry(SelectionIndex, true) : STileToolLayer{};
-	const int TileHash = TileToolTileHash(TilePos);
-	const bool AlreadyEdited = TileHash != -1 && State.m_EditedTiles.find(TileHash) != State.m_EditedTiles.end();
-	if(AlreadyEdited)
-	{
-		return true;
-	}
-	if(!SendTileToolLayerRequest(LAYER_GAME, TilePos, GameLayerToSend))
-	{
-		return false;
-	}
-
-	if(Entry.m_SetFrontLayer)
-	{
-		if(!SendTileToolLayerRequest(LAYER_FRONT, TilePos, FrontLayerToSend))
-		{
-			return false;
-		}
-	}
-
-	if(TileHash != -1)
-	{
-		State.m_EditedTiles.insert(TileHash);
-	}
-
-	return true;
-}
-
-bool CGameClient::SendTileToolClearRequest(const ivec2 &TilePos, STileToolDragState &State)
-{
-	const int TileHash = TileToolTileHash(TilePos);
-	const bool AlreadyEdited = TileHash != -1 && State.m_EditedTiles.find(TileHash) != State.m_EditedTiles.end();
-	if(AlreadyEdited)
-	{
-		return true;
-	}
-
-	if(!SendTileToolLayerRequest(LAYER_GAME, TilePos, STileToolLayer{TILE_AIR, 0}))
-	{
-		return false;
-	}
-
-	const CLayers *pLayers = Layers();
-	if(pLayers && pLayers->GetTilemapForLayer(LAYER_FRONT))
-	{
-		if(!SendTileToolLayerRequest(LAYER_FRONT, TilePos, STileToolLayer{TILE_AIR, 0}))
-		{
-			return false;
-		}
-	}
-
-	if(TileHash != -1)
-	{
-		State.m_EditedTiles.insert(TileHash);
-	}
-
-	return true;
-}
-
-void CGameClient::SendTileToolRequest(const ivec2 &TilePos, STileToolDragState &State, ETileToolAction Action)
-{
-	if(TilePos == State.m_LastSentTile)
-	{
-		return;
-	}
-
-	bool Success = false;
-	if(Action == ETileToolAction::Paint)
-	{
-		Success = SendTileToolPaintRequest(TilePos, State);
-	}
-	else
-	{
-		Success = SendTileToolClearRequest(TilePos, State);
-	}
-
-	if(!Success)
-	{
-		return;
-	}
-
-	State.m_LastSentTile = TilePos;
-}
-
-void CGameClient::SendTileToolLine(const ivec2 &From, const ivec2 &To, STileToolDragState &State, ETileToolAction Action)
-{
-	if(From == To)
-	{
-		SendTileToolRequest(To, State, Action);
-		return;
-	}
-
-	int x0 = From.x;
-	int y0 = From.y;
-	const int x1 = To.x;
-	const int y1 = To.y;
-	const int Dx = absolute(x1 - x0);
-	const int Sx = x0 < x1 ? 1 : -1;
-	const int Dy = -absolute(y1 - y0);
-	const int Sy = y0 < y1 ? 1 : -1;
-	int Err = Dx + Dy;
-	bool SkipFirst = true;
-	while(true)
-	{
-		if(!SkipFirst)
-		{
-			SendTileToolRequest(ivec2(x0, y0), State, Action);
-		}
-		SkipFirst = false;
-
-		if(x0 == x1 && y0 == y1)
-		{
-			break;
-		}
-
-		const int E2 = 2 * Err;
-		if(E2 >= Dy)
-		{
-			Err += Dy;
-			x0 += Sx;
-		}
-		if(E2 <= Dx)
-		{
-			Err += Dx;
-			y0 += Sy;
-		}
 	}
 }
 
@@ -5536,57 +5159,6 @@ bool CGameClient::SendTileToolTelePatternRequest(const ivec2 &TopLeft, int Width
 		return false;
 	}
 	return true;
-}
-
-void CGameClient::UpdateTileCursorNetworkState(bool Active, const ivec2 &Tile, int Dummy)
-{
-	if(Dummy < 0 || Dummy >= NUM_DUMMIES)
-	{
-		return;
-	}
-
-	bool &CursorActive = m_aTileToolCursorActive[Dummy];
-	ivec2 &LastCursorSent = m_aTileToolLastCursorSent[Dummy];
-
-	if(Active)
-	{
-		if(CursorActive && Tile == LastCursorSent)
-		{
-			return;
-		}
-	}
-	else if(!CursorActive)
-	{
-		return;
-	}
-
-	if(m_aLocalIds[Dummy] < 0 || (Dummy == 1 && !Client()->DummyConnected()))
-	{
-		CursorActive = false;
-		LastCursorSent = ivec2(-1, -1);
-		return;
-	}
-
-	CNetMsg_Cl_SetTileCursor Msg;
-	Msg.m_Active = Active;
-	Msg.m_X = Tile.x;
-	Msg.m_Y = Tile.y;
-	const int Conn = Dummy ? IClient::CONN_DUMMY : IClient::CONN_MAIN;
-	if(Client()->SendPackMsg(Conn, &Msg, MSGFLAG_NORECORD))
-	{
-		Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "client", "Failed to send tile cursor update");
-		return;
-	}
-
-	CursorActive = Active;
-	if(Active)
-	{
-		LastCursorSent = Tile;
-	}
-	else
-	{
-		LastCursorSent = ivec2(-1, -1);
-	}
 }
 
 bool CGameClient::SendEditorSpecState(bool Active, const vec2 &CursorWorld, int Dummy)
@@ -5763,161 +5335,6 @@ int CGameClient::ClientIdForDummy(int Dummy) const
 	if(NormalizedDummy < 0)
 		return -1;
 	return m_aLocalIds[NormalizedDummy];
-}
-
-void CGameClient::HandleTileToolInput(const vec2 &WorldTargetPos, bool FirePressed, bool FireHeld, bool FireReleased)
-{
-	if(!IsLocalTileToolEquipped())
-	{
-		ResetTileToolDrag();
-		return;
-	}
-
-	ivec2 Tile;
-	if(!ClampTileToolTarget(WorldTargetPos, Tile))
-	{
-		ResetTileToolDrag();
-		return;
-	}
-
-	STileToolDragState &DragState = m_TileToolPaintDrag;
-	if(FirePressed || (FireHeld && !DragState.m_Active))
-	{
-		DragState.m_Active = true;
-		DragState.m_LastTile = Tile;
-		SendTileToolRequest(Tile, DragState, ETileToolAction::Paint);
-	}
-	else if(DragState.m_Active && FireHeld && Tile != DragState.m_LastTile)
-	{
-		SendTileToolLine(DragState.m_LastTile, Tile, DragState, ETileToolAction::Paint);
-		DragState.m_LastTile = Tile;
-	}
-
-	if(FireReleased)
-	{
-		ResetTileToolDrag();
-	}
-}
-
-void CGameClient::HandleTileToolClearInput(const vec2 &WorldTargetPos, bool Pressed, bool Held, bool Released)
-{
-	if(!IsLocalTileToolEquipped())
-	{
-		ResetTileToolClearDrag();
-		return;
-	}
-
-	ivec2 Tile;
-	if(!ClampTileToolTarget(WorldTargetPos, Tile))
-	{
-		ResetTileToolClearDrag();
-		return;
-	}
-
-	STileToolDragState &DragState = m_TileToolClearDrag;
-	if(Pressed || (Held && !DragState.m_Active))
-	{
-		DragState.m_Active = true;
-		DragState.m_LastTile = Tile;
-		SendTileToolRequest(Tile, DragState, ETileToolAction::Clear);
-	}
-	else if(DragState.m_Active && Held && Tile != DragState.m_LastTile)
-	{
-		SendTileToolLine(DragState.m_LastTile, Tile, DragState, ETileToolAction::Clear);
-		DragState.m_LastTile = Tile;
-	}
-
-	if(Released)
-	{
-		ResetTileToolClearDrag();
-	}
-}
-
-void CGameClient::RenderTileToolTargetIndicator()
-{
-	const ivec2 InvalidCursor(-1, -1);
-	const int ControlledDummy = g_Config.m_ClDummy;
-	const auto DeactivateCursor = [&]() {
-		UpdateTileCursorNetworkState(false, InvalidCursor, ControlledDummy);
-	};
-
-	if(EditorSpecActive())
-	{
-		DeactivateCursor();
-		return;
-	}
-
-	if(!IsLocalTileToolEquipped())
-	{
-		DeactivateCursor();
-		return;
-	}
-
-	ivec2 Tile;
-	if(!GetTileToolCursorTile(Tile))
-	{
-		DeactivateCursor();
-		return;
-	}
-
-	UpdateTileCursorNetworkState(true, Tile, ControlledDummy);
-
-	float OldScreenX0, OldScreenY0, OldScreenX1, OldScreenY1;
-	Graphics()->GetScreen(&OldScreenX0, &OldScreenY0, &OldScreenX1, &OldScreenY1);
-
-	float aPoints[4];
-	Graphics()->MapScreenToWorld(m_Camera.m_Center.x, m_Camera.m_Center.y, 100.0f, 100.0f, 100.0f,
-		0.0f, 0.0f, Graphics()->ScreenAspect(), m_Camera.m_Zoom, aPoints);
-	Graphics()->MapScreen(aPoints[0], aPoints[1], aPoints[2], aPoints[3]);
-
-	const float TileSize = 32.0f;
-	const float OutlineWidth = maximum(2.0f, 2.5f * m_Camera.m_Zoom);
-	const auto DrawOutline = [&](float WorldX, float WorldY, const ColorRGBA &Color) {
-		Graphics()->TextureClear();
-		Graphics()->QuadsBegin();
-		Graphics()->SetColor(Color.r, Color.g, Color.b, Color.a);
-		IGraphics::CQuadItem aQuads[4] = {
-			IGraphics::CQuadItem(WorldX, WorldY, TileSize, OutlineWidth),
-			IGraphics::CQuadItem(WorldX, WorldY + TileSize - OutlineWidth, TileSize, OutlineWidth),
-			IGraphics::CQuadItem(WorldX, WorldY, OutlineWidth, TileSize),
-			IGraphics::CQuadItem(WorldX + TileSize - OutlineWidth, WorldY, OutlineWidth, TileSize),
-		};
-		Graphics()->QuadsDrawTL(aQuads, 4);
-		Graphics()->QuadsEnd();
-	};
-
-	const float TileWorldX = Tile.x * TileSize;
-	const float TileWorldY = Tile.y * TileSize;
-	DrawOutline(TileWorldX, TileWorldY, ColorRGBA(1.0f, 1.0f, 1.0f, 1.0f));
-
-	const auto MixWithWhite = [](const ColorRGBA &Color) {
-		return ColorRGBA(
-			std::clamp((Color.r + 1.0f) * 0.5f, 0.0f, 1.0f),
-			std::clamp((Color.g + 1.0f) * 0.5f, 0.0f, 1.0f),
-			std::clamp((Color.b + 1.0f) * 0.5f, 0.0f, 1.0f),
-			1.0f);
-	};
-	const auto IsControlledLocalClient = [&](int ClientId) {
-		const int ActiveClientId = m_aLocalIds[ControlledDummy];
-		return ActiveClientId >= 0 && ActiveClientId == ClientId;
-	};
-
-	for(int ClientId = 0; ClientId < MAX_CLIENTS; ++ClientId)
-	{
-		const CClientData &ClientData = m_aClients[ClientId];
-		const bool ControlledLocal = IsControlledLocalClient(ClientId);
-		if(!ClientData.m_TileCursorActive || ControlledLocal)
-		{
-			continue;
-		}
-
-		const float RemoteWorldX = ClientData.m_TileCursor.x * TileSize;
-		const float RemoteWorldY = ClientData.m_TileCursor.y * TileSize;
-		ColorRGBA OutlineColor = MixWithWhite(ClientData.m_RenderInfo.m_ColorBody);
-		DrawOutline(RemoteWorldX, RemoteWorldY, OutlineColor);
-	}
-
-	Graphics()->MapScreen(OldScreenX0, OldScreenY0, OldScreenX1, OldScreenY1);
 }
 
 void CGameClient::OnSkinUpdate(const char *pSkinName)

@@ -147,6 +147,39 @@ private:
 		vec2 m_DrawTextAnchor = vec2(0.0f, 0.0f);
 		std::string m_DrawTextBuffer;
 		SBrush m_Brush;
+
+		// Bezier-tool state. The path lives only while editorspec is open;
+		// rasterizing it just sends ordinary tile changes via the existing
+		// editorspec brush API, so the path itself never persists.
+		struct SBezierAnchor
+		{
+			vec2 m_Pos = vec2(0.0f, 0.0f);
+			vec2 m_InHandle = vec2(0.0f, 0.0f); // relative to m_Pos
+			vec2 m_OutHandle = vec2(0.0f, 0.0f); // relative to m_Pos
+		};
+		struct SBezierPath
+		{
+			std::vector<SBezierAnchor> m_vAnchors;
+			bool m_Closed = false;
+			bool Empty() const { return m_vAnchors.empty(); }
+			void Clear()
+			{
+				m_vAnchors.clear();
+				m_Closed = false;
+			}
+		};
+		SBezierPath m_BezierPath;
+		// Pen tool: dragging the just-placed anchor to set its outgoing handle.
+		bool m_BezierPenDragging = false;
+		// Pen tool: started a new anchor on press, but haven't moved far enough
+		// to consider it a drag — release here keeps it as a corner (no handles).
+		vec2 m_BezierPenPressWorld = vec2(0.0f, 0.0f);
+		// Ellipse / Rectangle tools: rectangle drag in progress.
+		bool m_BezierShapeDragging = false;
+		vec2 m_BezierShapeStartWorld = vec2(0.0f, 0.0f);
+		// Edit tool: -1 if nothing grabbed, otherwise anchor index. m_BezierEditHandle: 0=position, 1=in, 2=out.
+		int m_BezierEditAnchor = -1;
+		int m_BezierEditHandle = 0;
 	};
 
 	SState m_aStates[NUM_DUMMIES];
@@ -230,6 +263,19 @@ private:
 	void InvalidateDiffBaseline();
 	const char *LocalPlayerName(int Dummy) const;
 	ColorRGBA DrawColorForDummy(int Dummy) const;
+
+	// Bezier helpers
+	bool FirstNonAirGameTile(const SState &State, STileSample &OutTile) const;
+	void MakeEllipsePath(SState::SBezierPath &Path, const vec2 &Min, const vec2 &Max) const;
+	void MakeRectanglePath(SState::SBezierPath &Path, const vec2 &Min, const vec2 &Max) const;
+	void TessellatePath(const SState::SBezierPath &Path, std::vector<vec2> &OutPoints) const;
+	bool BezierEditHitTest(const SState &State, const vec2 &World, int &OutAnchor, int &OutHandle) const;
+	void RenderBezierMenu(const SState &State) const;
+	void RenderBezierOverlay(const SState &State) const;
+	bool ApplyBezierFill(SState &State);
+	bool ApplyBezierStroke(SState &State);
+	bool BezierIsActiveTool(int Tool) const;
+	bool CursorOverBezierMenu(const SState &State) const;
 
 	mutable IGraphics::CTextureHandle m_BrushPickerGameTexture;
 	mutable IGraphics::CTextureHandle m_BrushPickerFrontTexture;

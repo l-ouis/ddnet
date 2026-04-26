@@ -356,7 +356,6 @@ public:
 	//
 	void CheckPureTuning();
 	void SendTuningParams(int ClientId, int Zone = 0);
-	void SendTileCursorUpdate(int ClientId, bool Active, int X, int Y);
 	void SendEditorSpecCursorUpdate(int ClientId, bool Active, int CursorX, int CursorY);
 
 	const CVoteOptionServer *GetVoteOption(int Index) const;
@@ -397,7 +396,6 @@ public:
 	void OnShowOthersLegacyNetMessage(const CNetMsg_Cl_ShowOthersLegacy *pMsg, int ClientId);
 	void OnShowOthersNetMessage(const CNetMsg_Cl_ShowOthers *pMsg, int ClientId);
 	void OnShowDistanceNetMessage(const CNetMsg_Cl_ShowDistance *pMsg, int ClientId);
-	void OnSetTileCursorNetMessage(const CNetMsg_Cl_SetTileCursor *pMsg, int ClientId);
 	void OnSetEditorSpecStateNetMessage(const CNetMsg_Cl_SetEditorSpecState *pMsg, int ClientId);
 	void OnEditorSpecDrawSegmentNetMessage(const CNetMsg_Cl_EditorSpecDrawSegment *pMsg, int ClientId);
 	void OnEditorSpecDrawTextNetMessage(const CNetMsg_Cl_EditorSpecDrawText *pMsg, int ClientId);

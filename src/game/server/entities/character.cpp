@@ -554,13 +554,6 @@ void CCharacter::FireWeapon()
 	}
 	break;
 
-	case WEAPON_TILE:
-	{
-		GameServer()->CreateSound(m_Pos, SOUND_HAMMER_FIRE, TeamMask()); // reuse hammer sound for tile edits
-		m_ReloadTimer = 0;
-	}
-	break;
-
 	case WEAPON_GUN:
 	{
 		if(!m_Core.m_Jetpack || !m_pPlayer->m_NinjaJetpack || m_Core.m_HasTelegunGun)
@@ -1325,8 +1318,6 @@ void CCharacter::Snap(int SnappingClient)
 		DDNetCharacter.m_Flags |= CHARACTERFLAG_WEAPON_GRENADE;
 	if(m_Core.m_aWeapons[WEAPON_LASER].m_Got)
 		DDNetCharacter.m_Flags |= CHARACTERFLAG_WEAPON_LASER;
-	if(m_Core.m_aWeapons[WEAPON_TILE].m_Got)
-		DDNetCharacter.m_Flags |= CHARACTERFLAG_WEAPON_TILE;
 	if(m_Core.m_ActiveWeapon == WEAPON_NINJA)
 		DDNetCharacter.m_Flags |= CHARACTERFLAG_WEAPON_NINJA;
 	if(m_Core.m_LiveFrozen)
@@ -2425,8 +2416,6 @@ void CCharacter::ResetPickups()
 {
 	for(int i = WEAPON_SHOTGUN; i < NUM_WEAPONS - 1; i++)
 	{
-		if(i == WEAPON_TILE)
-			continue;
 		m_Core.m_aWeapons[i].m_Got = false;
 		if(m_Core.m_ActiveWeapon == i)
 			m_Core.m_ActiveWeapon = WEAPON_GUN;

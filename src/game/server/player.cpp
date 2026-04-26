@@ -119,8 +119,6 @@ void CPlayer::Reset()
 	m_ShowAll = g_Config.m_SvShowAllDefault;
 	m_EnableSpectatorCount = true;
 	m_ShowDistance = vec2(1200, 800);
-	m_TileCursorActive = false;
-	m_TileCursor = ivec2(-1, -1);
 	m_SpecTeam = false;
 	m_NinjaJetpack = false;
 	m_EditorSpecActive = false;

@@ -146,7 +146,6 @@ class CGameClient : public IGameClient
 public:
 	// all components
 	struct STileToolLayer;
-	struct STileToolPaletteEntry;
 
 	CInfoMessages m_InfoMessages;
 	CCamera m_Camera;
@@ -253,7 +252,6 @@ private:
 	static void ConTeam(IConsole::IResult *pResult, void *pUserData);
 	static void ConKill(IConsole::IResult *pResult, void *pUserData);
 	static void ConReadyChange7(IConsole::IResult *pResult, void *pUserData);
-	static void ConTileToolClearCursor(IConsole::IResult *pResult, void *pUserData);
 	static void ConRequestTileChange(IConsole::IResult *pResult, void *pUserData);
 
 	static void ConchainLanguageUpdate(IConsole::IResult *pResult, void *pUserData, IConsole::FCommandCallback pfnCallback, void *pCallbackUserData);
@@ -337,54 +335,10 @@ public:
 		int m_Number = 0;
 	};
 
-	struct STileToolDragState
-	{
-		bool m_Active = false;
-		ivec2 m_LastTile = ivec2(-1, -1);
-		ivec2 m_LastSentTile = ivec2(-1, -1);
-		std::unordered_set<int> m_EditedTiles;
-	};
-
-	enum class ETileToolAction
-	{
-		Paint,
-		Clear,
-	};
-
-	struct STileToolPaletteEntry
-	{
-		const char *m_pLabel = "";
-		STileToolLayer m_GameLayer;
-		bool m_SetFrontLayer = false;
-		STileToolLayer m_FrontLayer;
-		int m_CustomGameTileSlot = 0;
-		int m_CustomFrontTileSlot = 0;
-	};
-
-	static constexpr int TILE_TOOL_PALETTE_SIZE = 13;
-	static const std::array<STileToolPaletteEntry, TILE_TOOL_PALETTE_SIZE> ms_aTileToolPalette;
-
-	void HandleTileToolInput(const vec2 &WorldTargetPos, bool FirePressed, bool FireHeld, bool FireReleased);
-	void HandleTileToolClearInput(const vec2 &WorldTargetPos, bool Pressed, bool Held, bool Released);
-	void ResetTileToolDrag();
-	void ResetTileToolClearDrag();
-	void ResetTileToolDragState(STileToolDragState &State);
-	void SendTileToolRequest(const ivec2 &TilePos, STileToolDragState &State, ETileToolAction Action);
-	void SendTileToolLine(const ivec2 &From, const ivec2 &To, STileToolDragState &State, ETileToolAction Action);
 	bool SendTileToolAreaRequest(int Layer, const ivec2 &TopLeft, int Width, int Height, ETileToolAreaMode Mode, int Index, int Flags, const char *pPatternBase64, bool Destructive = true);
 	bool SendTileToolAreaFillRequest(int Layer, const ivec2 &TopLeft, int Width, int Height, const STileToolLayer &LayerData);
 	bool SendTileToolPatternRequest(int Layer, const ivec2 &TopLeft, int Width, int Height, const STileToolLayer *pTiles, int TileCount, bool Destructive = true);
 	bool SendTileToolTelePatternRequest(const ivec2 &TopLeft, int Width, int Height, const STeleTileToolLayer *pTiles, int TileCount, bool Destructive = true);
-	bool ClampTileToolTarget(const vec2 &WorldTargetPos, ivec2 &OutTile) const;
-	bool GetTileToolCursorTile(ivec2 &OutTile) const;
-	void RenderTileToolTargetIndicator();
-	bool IsLocalTileToolEquipped() const;
-	int TileToolSelectionIndex(int Dummy) const;
-	void SetTileToolSelectionIndex(int EntryIndex, int Dummy);
-	const std::array<STileToolPaletteEntry, TILE_TOOL_PALETTE_SIZE> &TileToolPalette() const { return ms_aTileToolPalette; }
-	STileToolLayer TileToolLayerForEntry(int EntryIndex, bool FrontLayer) const;
-	int TileToolTileHash(const ivec2 &TilePos) const;
-	void UpdateTileCursorNetworkState(bool Active, const ivec2 &Tile, int Dummy);
 	bool SendEditorSpecState(bool Active, const vec2 &CursorWorld, int Dummy = -1);
 	bool SendEditorSpecDrawSegment(const vec2 &Start, const vec2 &End, const ColorRGBA &Color, int Dummy = -1);
 	bool SendEditorSpecDrawText(const vec2 &Pos, const char *pText, const ColorRGBA &Color, int Dummy = -1);
@@ -402,15 +356,7 @@ public:
 	bool m_NewTick;
 	bool m_NewPredictedTick;
 	int m_aFlagDropTick[2];
-	bool SendTileToolPaintRequest(const ivec2 &TilePos, STileToolDragState &State);
-	bool SendTileToolClearRequest(const ivec2 &TilePos, STileToolDragState &State);
-	bool SendTileToolLayerRequest(int LayerIndex, const ivec2 &TilePos, const STileToolLayer &TileLayer) const;
 
-	STileToolDragState m_TileToolPaintDrag;
-	STileToolDragState m_TileToolClearDrag;
-	bool m_aTileToolCursorActive[NUM_DUMMIES] = {};
-	ivec2 m_aTileToolLastCursorSent[NUM_DUMMIES] = {};
-	int m_aTileToolSelectedPaletteIndex[NUM_DUMMIES] = {};
 	bool m_aEditorSpecActive[NUM_DUMMIES] = {};
 	bool m_aEditorSpecLockPosValid[NUM_DUMMIES] = {};
 	vec2 m_aEditorSpecLockPos[NUM_DUMMIES] = {};
@@ -572,8 +518,6 @@ public:
 		int m_FreezeEnd;
 		bool m_DeepFrozen;
 		bool m_LiveFrozen;
-		bool m_TileCursorActive;
-		ivec2 m_TileCursor;
 		bool m_EditorSpecCursorActive;
 		vec2 m_EditorSpecCursor;
 
