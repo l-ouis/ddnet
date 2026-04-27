@@ -253,6 +253,7 @@ MACRO_CONFIG_INT(ClDummyCopyMoves, cl_dummy_copy_moves, 0, 0, 1, CFGFLAG_CLIENT 
 
 // editorspec bezier
 MACRO_CONFIG_INT(ClBezierStrokeWidth, cl_bezier_stroke_width, 1, 1, 32, CFGFLAG_CLIENT | CFGFLAG_SAVE, "Editorspec bezier stroke width in tiles")
+MACRO_CONFIG_INT(ClBezierSnapTile, cl_bezier_snap_tile, 0, 0, 1, CFGFLAG_CLIENT | CFGFLAG_SAVE, "Snap bezier pen anchors to the nearest tile boundary")
 
 // more controllable dummy command
 MACRO_CONFIG_INT(ClDummyControl, cl_dummy_control, 0, 0, 1, CFGFLAG_CLIENT | CFGFLAG_INSENSITIVE, "Whether you can control dummy at the same time (cl_dummy_jump, cl_dummy_fire, cl_dummy_hook)")

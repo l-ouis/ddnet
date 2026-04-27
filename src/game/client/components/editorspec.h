@@ -180,6 +180,9 @@ private:
 		// Edit tool: -1 if nothing grabbed, otherwise anchor index. m_BezierEditHandle: 0=position, 1=in, 2=out.
 		int m_BezierEditAnchor = -1;
 		int m_BezierEditHandle = 0;
+		// Double-click tracking for inserting nodes on the path (Inkscape-style).
+		int64_t m_BezierLastClickTime = 0;
+		vec2 m_BezierLastClickWorld = vec2(0.0f, 0.0f);
 	};
 
 	SState m_aStates[NUM_DUMMIES];
@@ -270,6 +273,8 @@ private:
 	void MakeRectanglePath(SState::SBezierPath &Path, const vec2 &Min, const vec2 &Max) const;
 	void TessellatePath(const SState::SBezierPath &Path, std::vector<vec2> &OutPoints) const;
 	bool BezierEditHitTest(const SState &State, const vec2 &World, int &OutAnchor, int &OutHandle) const;
+	bool ClosestPointOnBezierPath(const SState::SBezierPath &Path, const vec2 &World, int &OutSeg, float &OutT, float &OutDistSq) const;
+	void InsertBezierAnchorOnSegment(SState::SBezierPath &Path, int Seg, float T) const;
 	void RenderBezierMenu(const SState &State) const;
 	void RenderBezierOverlay(const SState &State) const;
 	bool ApplyBezierFill(SState &State);

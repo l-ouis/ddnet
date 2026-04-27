@@ -4,6 +4,7 @@
 #include <base/color.h>
 #include <base/math.h>
 #include <base/str.h>
+#include <base/time.h>
 
 #include <engine/console.h>
 #include <engine/font_icons.h>
@@ -56,7 +57,7 @@ namespace
 
 	// Bezier menu layout (anchored below the tool palette / tele menu).
 	constexpr float BEZIER_MENU_VERTICAL_GAP = 8.0f;
-	constexpr float BEZIER_MENU_WIDTH = 720.0f;
+	constexpr float BEZIER_MENU_WIDTH = 780.0f;
 	constexpr float BEZIER_MENU_HEIGHT = 52.0f;
 	constexpr float BEZIER_MENU_ROUNDING = 8.0f;
 	constexpr float BEZIER_MENU_PADDING = 12.0f;
@@ -70,6 +71,8 @@ namespace
 	constexpr float BEZIER_SPINNER_BUTTON_SIZE = 26.0f;
 	constexpr float BEZIER_SPINNER_VALUE_WIDTH = 50.0f;
 	constexpr float BEZIER_SPINNER_GAP = 5.0f;
+	constexpr float BEZIER_SNAP_TOGGLE_WIDTH = 56.0f;
+	constexpr float BEZIER_SNAP_TOGGLE_HEIGHT = 26.0f;
 	constexpr int BEZIER_NUM_TOOLS = 4;
 	constexpr int BEZIER_NUM_ACTIONS = 3;
 	// Pen tool: distance in world units below which click+drag still counts as a corner click.
@@ -82,6 +85,9 @@ namespace
 	constexpr float BEZIER_ELLIPSE_HANDLE_RATIO = 0.5522847498f;
 	// Tessellation: number of segments per cubic curve. A bit aggressive to keep raster smooth.
 	constexpr int BEZIER_TESSELLATION_STEPS = 24;
+	constexpr float BEZIER_DOUBLE_CLICK_SECONDS = 0.4f;
+	constexpr float BEZIER_DOUBLE_CLICK_RADIUS = 6.0f;
+	constexpr float BEZIER_PATH_INSERT_RADIUS = 10.0f;
 	constexpr float TELE_MENU_VERTICAL_GAP = 8.0f;
 	constexpr float TELE_MENU_HEIGHT = 46.0f;
 	constexpr float TELE_MENU_ROUNDING = 8.0f;
@@ -340,6 +346,34 @@ namespace
 	vec2 BezierSpinnerValueSize()
 	{
 		return vec2(BEZIER_SPINNER_VALUE_WIDTH, BEZIER_SPINNER_BUTTON_SIZE);
+	}
+
+	float BezierSpinnerGroupRight(const vec2 &PalettePos, bool TeleMenuVisible)
+	{
+		const vec2 PlusPos = BezierSpinnerPlusPos(PalettePos, TeleMenuVisible);
+		return PlusPos.x + BEZIER_SPINNER_BUTTON_SIZE;
+	}
+
+	vec2 BezierSnapTogglePos(const vec2 &PalettePos, bool TeleMenuVisible)
+	{
+		const vec2 MenuPos = BezierMenuPos(PalettePos, TeleMenuVisible);
+		const float ButtonY = MenuPos.y + (BEZIER_MENU_HEIGHT - BEZIER_SNAP_TOGGLE_HEIGHT) * 0.5f;
+		const float ButtonX = BezierSpinnerGroupRight(PalettePos, TeleMenuVisible) + BEZIER_GROUP_GAP;
+		return vec2(ButtonX, ButtonY);
+	}
+
+	vec2 BezierSnapToggleSize()
+	{
+		return vec2(BEZIER_SNAP_TOGGLE_WIDTH, BEZIER_SNAP_TOGGLE_HEIGHT);
+	}
+
+	vec2 SnapBezierPosToTile(const vec2 &P)
+	{
+		// Snap to nearest tile boundary (multiples of 32 px). Handles stay
+		// unsnapped — they control curve shape and need sub-tile precision.
+		if(!g_Config.m_ClBezierSnapTile)
+			return P;
+		return vec2(round_to_int(P.x / 32.0f) * 32.0f, round_to_int(P.y / 32.0f) * 32.0f);
 	}
 
 	vec2 EvalCubicBezier(const vec2 &P0, const vec2 &P1, const vec2 &P2, const vec2 &P3, float t)
@@ -1729,7 +1763,7 @@ bool CEditorSpec::OnCursorMove(float x, float y, IInput::ECursorType CursorType)
 		SState::SBezierAnchor &A = State.m_BezierPath.m_vAnchors[State.m_BezierEditAnchor];
 		if(State.m_BezierEditHandle == 0)
 		{
-			A.m_Pos = State.m_CursorWorld;
+			A.m_Pos = SnapBezierPosToTile(State.m_CursorWorld);
 		}
 		else if(State.m_BezierEditHandle == 1)
 		{
@@ -2369,6 +2403,16 @@ bool CEditorSpec::OnInput(const IInput::CEvent &Event)
 					Consumed = true;
 				}
 			}
+			if(!Consumed)
+			{
+				const vec2 SnapPos = BezierSnapTogglePos(State.m_ToolPalettePos, TeleVis);
+				const vec2 SnapSize = BezierSnapToggleSize();
+				if(PointInRect(State.m_CursorWorld, SnapPos, SnapSize))
+				{
+					g_Config.m_ClBezierSnapTile = g_Config.m_ClBezierSnapTile ? 0 : 1;
+					Consumed = true;
+				}
+			}
 		}
 		else if(Release)
 		{
@@ -2430,11 +2474,14 @@ bool CEditorSpec::OnInput(const IInput::CEvent &Event)
 			{
 				if(Press)
 				{
-					// Click on first anchor closes the path.
+					const vec2 PressPos = SnapBezierPosToTile(State.m_CursorWorld);
+					// Click on first anchor closes the path. Compare against the
+					// snapped click position so close-detection still works when
+					// anchors are tile-aligned.
 					if(State.m_BezierPath.m_vAnchors.size() >= 3 && !State.m_BezierPath.m_Closed)
 					{
 						const vec2 First = State.m_BezierPath.m_vAnchors.front().m_Pos;
-						if(length(State.m_CursorWorld - First) <= BEZIER_PEN_CLOSE_RADIUS)
+						if(length(PressPos - First) <= BEZIER_PEN_CLOSE_RADIUS)
 						{
 							State.m_BezierPath.m_Closed = true;
 							State.m_BezierPenDragging = false;
@@ -2443,7 +2490,7 @@ bool CEditorSpec::OnInput(const IInput::CEvent &Event)
 					}
 					// Append a fresh corner anchor; drag in OnCursorMove may add handles.
 					SState::SBezierAnchor A;
-					A.m_Pos = State.m_CursorWorld;
+					A.m_Pos = PressPos;
 					State.m_BezierPath.m_vAnchors.push_back(A);
 					State.m_BezierPenDragging = true;
 					State.m_BezierPenPressWorld = State.m_CursorWorld;
@@ -2490,10 +2537,37 @@ bool CEditorSpec::OnInput(const IInput::CEvent &Event)
 				{
 					int Anchor = -1;
 					int Handle = 0;
-					if(BezierEditHitTest(State, State.m_CursorWorld, Anchor, Handle))
+					const bool HitNode = BezierEditHitTest(State, State.m_CursorWorld, Anchor, Handle);
+					const int64_t Now = time_get();
+					if(HitNode)
 					{
 						State.m_BezierEditAnchor = Anchor;
 						State.m_BezierEditHandle = Handle;
+					}
+					else
+					{
+						// Double-click on the orange path inserts a new anchor (Inkscape-style).
+						const int64_t MaxDelta = (int64_t)(BEZIER_DOUBLE_CLICK_SECONDS * (float)time_freq());
+						const bool RecentClick = State.m_BezierLastClickTime > 0 && (Now - State.m_BezierLastClickTime) <= MaxDelta;
+						const bool ClosePosition = length(State.m_CursorWorld - State.m_BezierLastClickWorld) <= BEZIER_DOUBLE_CLICK_RADIUS;
+						bool Inserted = false;
+						if(RecentClick && ClosePosition)
+						{
+							int Seg = -1;
+							float T = 0.0f;
+							float DistSq = 0.0f;
+							if(ClosestPointOnBezierPath(State.m_BezierPath, State.m_CursorWorld, Seg, T, DistSq) &&
+								DistSq <= BEZIER_PATH_INSERT_RADIUS * BEZIER_PATH_INSERT_RADIUS)
+							{
+								InsertBezierAnchorOnSegment(State.m_BezierPath, Seg, T);
+								State.m_BezierEditAnchor = Seg + 1;
+								State.m_BezierEditHandle = 0;
+								Inserted = true;
+							}
+						}
+						// Reset last-click after a successful insert so the next click starts fresh.
+						State.m_BezierLastClickTime = Inserted ? 0 : Now;
+						State.m_BezierLastClickWorld = State.m_CursorWorld;
 					}
 					return true;
 				}
@@ -3643,6 +3717,84 @@ bool CEditorSpec::BezierEditHitTest(const SState &State, const vec2 &World, int 
 	return false;
 }
 
+bool CEditorSpec::ClosestPointOnBezierPath(const SState::SBezierPath &Path, const vec2 &World, int &OutSeg, float &OutT, float &OutDistSq) const
+{
+	OutSeg = -1;
+	OutT = 0.0f;
+	OutDistSq = std::numeric_limits<float>::infinity();
+	const int N = (int)Path.m_vAnchors.size();
+	if(N < 2)
+		return false;
+	const int SegCount = Path.m_Closed ? N : (N - 1);
+	if(SegCount <= 0)
+		return false;
+
+	bool Found = false;
+	for(int i = 0; i < SegCount; ++i)
+	{
+		const SState::SBezierAnchor &A = Path.m_vAnchors[i];
+		const SState::SBezierAnchor &B = Path.m_vAnchors[(i + 1) % N];
+		const vec2 P0 = A.m_Pos;
+		const vec2 P1 = A.m_Pos + A.m_OutHandle;
+		const vec2 P2 = B.m_Pos + B.m_InHandle;
+		const vec2 P3 = B.m_Pos;
+		vec2 Prev = P0;
+		for(int s = 1; s <= BEZIER_TESSELLATION_STEPS; ++s)
+		{
+			const float t1 = (float)s / (float)BEZIER_TESSELLATION_STEPS;
+			const vec2 Curr = EvalCubicBezier(P0, P1, P2, P3, t1);
+			// Project World onto segment (Prev → Curr) to recover the curve parameter.
+			const vec2 Seg = Curr - Prev;
+			const float L2 = length_squared(Seg);
+			float u = 0.0f;
+			if(L2 > 1e-6f)
+				u = std::clamp(dot(World - Prev, Seg) / L2, 0.0f, 1.0f);
+			const vec2 Proj = Prev + Seg * u;
+			const float D2 = length_squared(World - Proj);
+			if(D2 < OutDistSq)
+			{
+				OutDistSq = D2;
+				const float t0 = (float)(s - 1) / (float)BEZIER_TESSELLATION_STEPS;
+				OutSeg = i;
+				OutT = t0 + (t1 - t0) * u;
+				Found = true;
+			}
+			Prev = Curr;
+		}
+	}
+	return Found;
+}
+
+void CEditorSpec::InsertBezierAnchorOnSegment(SState::SBezierPath &Path, int Seg, float T) const
+{
+	const int N = (int)Path.m_vAnchors.size();
+	if(N < 2 || Seg < 0 || Seg >= N)
+		return;
+	const int Next = (Seg + 1) % N;
+	// De Casteljau split of the cubic at parameter T. Endpoint anchor positions
+	// stay put; their handles are reshaped so the visual curve is preserved.
+	const vec2 P0 = Path.m_vAnchors[Seg].m_Pos;
+	const vec2 P1 = Path.m_vAnchors[Seg].m_Pos + Path.m_vAnchors[Seg].m_OutHandle;
+	const vec2 P2 = Path.m_vAnchors[Next].m_Pos + Path.m_vAnchors[Next].m_InHandle;
+	const vec2 P3 = Path.m_vAnchors[Next].m_Pos;
+	const float u = 1.0f - T;
+	const vec2 Q0 = P0 * u + P1 * T;
+	const vec2 Q1 = P1 * u + P2 * T;
+	const vec2 Q2 = P2 * u + P3 * T;
+	const vec2 R0 = Q0 * u + Q1 * T;
+	const vec2 R1 = Q1 * u + Q2 * T;
+	const vec2 M = R0 * u + R1 * T;
+
+	Path.m_vAnchors[Seg].m_OutHandle = Q0 - P0;
+	Path.m_vAnchors[Next].m_InHandle = Q2 - P3;
+
+	SState::SBezierAnchor NewAnchor;
+	NewAnchor.m_Pos = M;
+	NewAnchor.m_InHandle = R0 - M;
+	NewAnchor.m_OutHandle = R1 - M;
+	Path.m_vAnchors.insert(Path.m_vAnchors.begin() + Seg + 1, NewAnchor);
+}
+
 bool CEditorSpec::CursorOverBezierMenu(const SState &State) const
 {
 	if(!State.m_ToolPaletteActive)
@@ -3709,35 +3861,69 @@ namespace
 // Send a rectangular tile pattern covering the path's bbox, with `Tile` filling
 // every cell that the membership predicate accepts and TILE_AIR (no-op) elsewhere.
 // Uses non-destructive mode so air cells don't clobber existing map content.
+//
+// Large bboxes are split into sub-rectangles. Each request is wrapped in a
+// network chunk whose size header is only 10 bits (NET_MAX_CHUNK_SIZE = 1023),
+// and a base64-encoded pattern is ~2.67 bytes per tile, so we cap each chunk
+// well under that limit.
 namespace
 {
+	constexpr int kBezierChunkMaxTiles = 256;
+
+	bool SubmitBezierTilePatternChunk(CGameClient *pGameClient, const ivec2 &TopLeft, int Width, int Height,
+		const std::vector<unsigned char> &FullMask, int FullW, int OffX, int OffY, int FillIndex, int FillFlags)
+	{
+		const int TileCount = Width * Height;
+		if(TileCount <= 0)
+			return true;
+		std::vector<CGameClient::STileToolLayer> Payload(TileCount);
+		bool AnyHit = false;
+		for(int ty = 0; ty < Height; ++ty)
+		{
+			for(int tx = 0; tx < Width; ++tx)
+			{
+				const int Idx = (OffY + ty) * FullW + (OffX + tx);
+				if(FullMask[Idx])
+				{
+					Payload[ty * Width + tx].m_Index = FillIndex;
+					Payload[ty * Width + tx].m_Flags = FillFlags;
+					AnyHit = true;
+				}
+				else
+				{
+					Payload[ty * Width + tx].m_Index = TILE_AIR;
+					Payload[ty * Width + tx].m_Flags = 0;
+				}
+			}
+		}
+		if(!AnyHit)
+			return true;
+		return pGameClient->SendTileToolPatternRequest(LAYER_GAME, TopLeft, Width, Height, Payload.data(), TileCount, /*Destructive=*/false);
+	}
+
 	bool SubmitBezierTilePattern(CGameClient *pGameClient, const ivec2 &TopLeft, int Width, int Height,
 		const std::vector<unsigned char> &Mask, int FillIndex, int FillFlags)
 	{
 		const int TileCount = Width * Height;
 		if(TileCount <= 0 || (int)Mask.size() != TileCount)
 			return false;
-		std::vector<CGameClient::STileToolLayer> Payload(TileCount);
-		bool AnyHit = false;
-		for(int i = 0; i < TileCount; ++i)
+
+		const int ChunkW = std::min(Width, kBezierChunkMaxTiles);
+		const int ChunkH = std::max(1, kBezierChunkMaxTiles / std::max(1, ChunkW));
+
+		bool AnySent = false;
+		for(int Y = 0; Y < Height; Y += ChunkH)
 		{
-			if(Mask[i])
+			const int H = std::min(ChunkH, Height - Y);
+			for(int X = 0; X < Width; X += ChunkW)
 			{
-				Payload[i].m_Index = FillIndex;
-				Payload[i].m_Flags = FillFlags;
-				AnyHit = true;
-			}
-			else
-			{
-				Payload[i].m_Index = TILE_AIR;
-				Payload[i].m_Flags = 0;
+				const int W = std::min(ChunkW, Width - X);
+				const ivec2 ChunkTopLeft(TopLeft.x + X, TopLeft.y + Y);
+				if(SubmitBezierTilePatternChunk(pGameClient, ChunkTopLeft, W, H, Mask, Width, X, Y, FillIndex, FillFlags))
+					AnySent = true;
 			}
 		}
-		if(!AnyHit)
-			return false;
-		// Destructive=false: AIR cells in the payload leave the existing tile alone,
-		// so we only overwrite cells covered by the path.
-		return pGameClient->SendTileToolPatternRequest(LAYER_GAME, TopLeft, Width, Height, Payload.data(), TileCount, /*Destructive=*/false);
+		return AnySent;
 	}
 
 	// Compute world-space bbox for a tessellated polyline, with optional padding.
@@ -4004,6 +4190,24 @@ void CEditorSpec::RenderBezierMenu(const SState &State) const
 	const float FontSize = 13.0f;
 	const float TextW = TextRender()->TextWidth(FontSize, aBuf);
 	TextRender()->Text(ValuePos.x + (ValueSize.x - TextW) * 0.5f, ValuePos.y + (ValueSize.y - FontSize) * 0.5f, FontSize, aBuf);
+
+	// Snap-to-tile toggle: filled when active, outlined when inactive.
+	const vec2 SnapPos = BezierSnapTogglePos(State.m_ToolPalettePos, TeleMenuVisible);
+	const vec2 SnapSize = BezierSnapToggleSize();
+	const bool SnapActive = g_Config.m_ClBezierSnapTile != 0;
+	const bool SnapHover = PointInRect(State.m_CursorWorld, SnapPos, SnapSize);
+	ColorRGBA SnapColor;
+	if(SnapActive)
+		SnapColor = SnapHover ? ColorRGBA(0.32f, 0.7f, 1.0f, 0.95f) : ColorRGBA(0.2f, 0.55f, 1.0f, 0.9f);
+	else
+		SnapColor = SnapHover ? ColorRGBA(0.32f, 0.32f, 0.32f, 0.9f) : ColorRGBA(0.2f, 0.2f, 0.2f, 0.85f);
+	Graphics()->DrawRect(SnapPos.x, SnapPos.y, SnapSize.x, SnapSize.y, SnapColor, IGraphics::CORNER_ALL, 6.0f);
+	TextRender()->TextColor(ColorRGBA(1.0f, 1.0f, 1.0f, 1.0f));
+	TextRender()->TextOutlineColor(ColorRGBA(0.0f, 0.0f, 0.0f, 0.3f));
+	const char *pSnapLabel = "Snap";
+	const float SnapTextW = TextRender()->TextWidth(FontSize, pSnapLabel);
+	TextRender()->Text(SnapPos.x + (SnapSize.x - SnapTextW) * 0.5f, SnapPos.y + (SnapSize.y - FontSize) * 0.5f, FontSize, pSnapLabel);
+
 	TextRender()->TextColor(TextRender()->DefaultTextColor());
 	TextRender()->TextOutlineColor(TextRender()->DefaultTextOutlineColor());
 }
