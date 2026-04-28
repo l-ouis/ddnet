@@ -198,3 +198,15 @@ CMapItemLayerTilemap *CLayers::GetTilemapForLayer(int Layer) const
 		return nullptr;
 	}
 }
+
+bool CLayers::IsTilemapValid(const CMapItemLayerTilemap *pTilemap) const
+{
+	if(!pTilemap)
+		return false;
+	return pTilemap == m_pGameLayer ||
+	       pTilemap == m_pFrontLayer ||
+	       pTilemap == m_pTeleLayer ||
+	       pTilemap == m_pSpeedupLayer ||
+	       pTilemap == m_pSwitchLayer ||
+	       pTilemap == m_pTuneLayer;
+}

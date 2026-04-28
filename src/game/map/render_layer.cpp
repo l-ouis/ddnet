@@ -817,6 +817,8 @@ void CRenderLayerTile::UploadTileData(std::optional<CTileLayerVisuals> &VisualsO
 
 	if(CurOverlay == 0)
 	{
+		if(!m_LayerClip.has_value())
+			m_LayerClip.emplace();
 		if(DrawLeft > DrawRight || DrawTop > DrawBottom)
 		{
 			m_LayerClip->m_Height = 0.0f;
@@ -1079,6 +1081,8 @@ void CRenderLayerTile::UploadTileDataPreAllocated(std::optional<CTileLayerVisual
 	// Layer clip from drawn interior tiles only (overlays piggyback on overlay 0's clip).
 	if(CurOverlay == 0)
 	{
+		if(!m_LayerClip.has_value())
+			m_LayerClip.emplace();
 		if(DrawLeft > DrawRight || DrawTop > DrawBottom)
 		{
 			m_LayerClip->m_Height = 0.0f;
@@ -1258,35 +1262,28 @@ void CRenderLayerTile::UpdateTileInPlaceForVisual(std::optional<CTileLayerVisual
 		WriteAndUpload(L.m_Corners + 3, 0, H - 1, ivec2{-32, 0});
 
 	// Editor edits don't recompute m_LayerClip; extend it so the new tile
-	// isn't culled when the camera frames only the new region.
-	if(CurOverlay == 0 && m_LayerClip.has_value())
+	// isn't culled when the camera frames only the new region. Extend
+	// unconditionally — gating on GetTileData(...) > 0 misses cases like a
+	// speedup tile placed with default Force/MaxSpeed (overlay 0 reports 0
+	// but the overlay arrows still need to render).
+	if(CurOverlay == 0)
 	{
-		unsigned char Index = 0;
-		unsigned char Flags = 0;
-		int AngleRotate = -1;
-		GetTileData(&Index, &Flags, &AngleRotate, tx, ty, 0);
-		if(Index > 0)
+		const float TileX = tx * 32.0f;
+		const float TileY = ty * 32.0f;
+		if(!m_LayerClip.has_value() || m_LayerClip->m_Width <= 0.0f || m_LayerClip->m_Height <= 0.0f)
 		{
-			const float TileX = tx * 32.0f;
-			const float TileY = ty * 32.0f;
-			if(m_LayerClip->m_Width <= 0.0f || m_LayerClip->m_Height <= 0.0f)
-			{
-				m_LayerClip->m_X = TileX;
-				m_LayerClip->m_Y = TileY;
-				m_LayerClip->m_Width = 32.0f;
-				m_LayerClip->m_Height = 32.0f;
-			}
-			else
-			{
-				const float Left = std::min(m_LayerClip->m_X, TileX);
-				const float Top = std::min(m_LayerClip->m_Y, TileY);
-				const float Right = std::max(m_LayerClip->m_X + m_LayerClip->m_Width, TileX + 32.0f);
-				const float Bottom = std::max(m_LayerClip->m_Y + m_LayerClip->m_Height, TileY + 32.0f);
-				m_LayerClip->m_X = Left;
-				m_LayerClip->m_Y = Top;
-				m_LayerClip->m_Width = Right - Left;
-				m_LayerClip->m_Height = Bottom - Top;
-			}
+			m_LayerClip = CClipRegion(TileX, TileY, 32.0f, 32.0f);
+		}
+		else
+		{
+			const float Left = std::min(m_LayerClip->m_X, TileX);
+			const float Top = std::min(m_LayerClip->m_Y, TileY);
+			const float Right = std::max(m_LayerClip->m_X + m_LayerClip->m_Width, TileX + 32.0f);
+			const float Bottom = std::max(m_LayerClip->m_Y + m_LayerClip->m_Height, TileY + 32.0f);
+			m_LayerClip->m_X = Left;
+			m_LayerClip->m_Y = Top;
+			m_LayerClip->m_Width = Right - Left;
+			m_LayerClip->m_Height = Bottom - Top;
 		}
 	}
 }

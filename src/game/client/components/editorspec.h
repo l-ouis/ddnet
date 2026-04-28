@@ -277,6 +277,9 @@ private:
 	void InsertBezierAnchorOnSegment(SState::SBezierPath &Path, int Seg, float T) const;
 	void RenderBezierMenu(const SState &State) const;
 	void RenderBezierOverlay(const SState &State) const;
+	void RenderBezierActionPreview(const SState &State) const;
+	bool ComputeBezierFillRegion(const SState &State, ivec2 &OutTopLeft, int &OutWidth, int &OutHeight, std::vector<unsigned char> &OutMask) const;
+	bool ComputeBezierStrokeRegion(const SState &State, ivec2 &OutTopLeft, int &OutWidth, int &OutHeight, std::vector<unsigned char> &OutMask) const;
 	bool ApplyBezierFill(SState &State);
 	bool ApplyBezierStroke(SState &State);
 	bool BezierIsActiveTool(int Tool) const;

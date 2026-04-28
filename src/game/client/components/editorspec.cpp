@@ -2167,6 +2167,14 @@ bool CEditorSpec::OnInput(const IInput::CEvent &Event)
 						State.m_BezierEditAnchor = -1;
 					}
 				}
+				else if(State.m_SelectedPrimaryTool == PRIMARY_TOOL_BEZIER_PEN)
+				{
+					// Pen → Edit: drop out of placement mode without disturbing the path.
+					State.m_BezierPenDragging = false;
+					State.m_BezierEditAnchor = -1;
+					State.m_BezierLastClickTime = 0;
+					State.m_SelectedPrimaryTool = PRIMARY_TOOL_BEZIER_EDIT;
+				}
 				else if(BezierIsActiveTool(State.m_SelectedPrimaryTool))
 				{
 					// Other bezier tools: RMB cancels in-progress shape drag, otherwise no-op
@@ -2950,6 +2958,7 @@ void CEditorSpec::OnRender()
 	RenderDrawTextPreview(State);
 
 	RenderBezierOverlay(State);
+	RenderBezierActionPreview(State);
 
 	if(State.m_ToolPaletteActive)
 	{
@@ -3601,6 +3610,8 @@ bool CEditorSpec::BezierIsActiveTool(int Tool) const
 bool CEditorSpec::FirstNonAirGameTile(const SState &State, STileSample &OutTile) const
 {
 	const SBrushLayer &GameLayer = State.m_Brush.m_aLayers[static_cast<int>(ELayerGroup::GAME)];
+	if(GameLayer.m_Tiles.empty())
+		return false;
 	for(const STileSample &Tile : GameLayer.m_Tiles)
 	{
 		if(Tile.m_Index != TILE_AIR)
@@ -3609,7 +3620,10 @@ bool CEditorSpec::FirstNonAirGameTile(const SState &State, STileSample &OutTile)
 			return true;
 		}
 	}
-	return false;
+	// All-air brush: deliberate eraser. Surface TILE_AIR so callers can
+	// rasterize air (the destructive flag is forced on at the apply site).
+	OutTile = GameLayer.m_Tiles.front();
+	return true;
 }
 
 void CEditorSpec::MakeRectanglePath(SState::SBezierPath &Path, const vec2 &Min, const vec2 &Max) const
@@ -3860,7 +3874,10 @@ namespace
 
 // Send a rectangular tile pattern covering the path's bbox, with `Tile` filling
 // every cell that the membership predicate accepts and TILE_AIR (no-op) elsewhere.
-// Uses non-destructive mode so air cells don't clobber existing map content.
+// In non-destructive mode air cells are no-ops on the server so they don't
+// clobber existing content. In destructive mode air *does* clear cells, so we
+// instead emit per-row contiguous runs of mask cells — each run is a 1×N
+// destructive pattern that only touches cells inside the path.
 //
 // Large bboxes are split into sub-rectangles. Each request is wrapped in a
 // network chunk whose size header is only 10 bits (NET_MAX_CHUNK_SIZE = 1023),
@@ -3901,12 +3918,54 @@ namespace
 		return pGameClient->SendTileToolPatternRequest(LAYER_GAME, TopLeft, Width, Height, Payload.data(), TileCount, /*Destructive=*/false);
 	}
 
-	bool SubmitBezierTilePattern(CGameClient *pGameClient, const ivec2 &TopLeft, int Width, int Height,
+	// Destructive submission: split each row into contiguous runs of in-mask
+	// cells and ship each run as its own 1×N destructive pattern, so cells
+	// outside the path stay untouched.
+	bool SubmitBezierTilePatternDestructive(CGameClient *pGameClient, const ivec2 &TopLeft, int Width, int Height,
 		const std::vector<unsigned char> &Mask, int FillIndex, int FillFlags)
+	{
+		bool AnySent = false;
+		std::vector<CGameClient::STileToolLayer> Payload;
+		for(int y = 0; y < Height; ++y)
+		{
+			int x = 0;
+			while(x < Width)
+			{
+				if(!Mask[(size_t)y * Width + x])
+				{
+					++x;
+					continue;
+				}
+				const int RunStart = x;
+				while(x < Width && Mask[(size_t)y * Width + x])
+					++x;
+				const int RunLength = x - RunStart;
+				Payload.assign((size_t)RunLength, CGameClient::STileToolLayer{});
+				for(int i = 0; i < RunLength; ++i)
+				{
+					Payload[i].m_Index = FillIndex;
+					Payload[i].m_Flags = FillFlags;
+				}
+				const ivec2 RunTopLeft(TopLeft.x + RunStart, TopLeft.y + y);
+				if(pGameClient->SendTileToolPatternRequest(LAYER_GAME, RunTopLeft, RunLength, 1,
+					   Payload.data(), RunLength, /*Destructive=*/true))
+				{
+					AnySent = true;
+				}
+			}
+		}
+		return AnySent;
+	}
+
+	bool SubmitBezierTilePattern(CGameClient *pGameClient, const ivec2 &TopLeft, int Width, int Height,
+		const std::vector<unsigned char> &Mask, int FillIndex, int FillFlags, bool Destructive)
 	{
 		const int TileCount = Width * Height;
 		if(TileCount <= 0 || (int)Mask.size() != TileCount)
 			return false;
+
+		if(Destructive)
+			return SubmitBezierTilePatternDestructive(pGameClient, TopLeft, Width, Height, Mask, FillIndex, FillFlags);
 
 		const int ChunkW = std::min(Width, kBezierChunkMaxTiles);
 		const int ChunkH = std::max(1, kBezierChunkMaxTiles / std::max(1, ChunkW));
@@ -3945,12 +4004,12 @@ namespace
 	}
 }
 
-bool CEditorSpec::ApplyBezierFill(SState &State)
+bool CEditorSpec::ComputeBezierFillRegion(const SState &State, ivec2 &OutTopLeft, int &OutWidth, int &OutHeight, std::vector<unsigned char> &OutMask) const
 {
+	OutWidth = 0;
+	OutHeight = 0;
+	OutMask.clear();
 	if(State.m_BezierPath.m_vAnchors.size() < 3 || !State.m_BezierPath.m_Closed)
-		return false;
-	STileSample Tile;
-	if(!FirstNonAirGameTile(State, Tile))
 		return false;
 
 	std::vector<vec2> Pts;
@@ -3976,17 +4035,37 @@ bool CEditorSpec::ApplyBezierFill(SState &State)
 		return false;
 	const int W = X1 - X0 + 1;
 	const int H = Y1 - Y0 + 1;
-	std::vector<unsigned char> Mask((size_t)W * H, 0);
+	OutMask.assign((size_t)W * H, 0);
 	for(int ty = 0; ty < H; ++ty)
 	{
 		for(int tx = 0; tx < W; ++tx)
 		{
 			const vec2 Center((X0 + tx) * 32.0f + 16.0f, (Y0 + ty) * 32.0f + 16.0f);
 			if(PointInPolygon(Pts, Center))
-				Mask[ty * W + tx] = 1;
+				OutMask[ty * W + tx] = 1;
 		}
 	}
-	return SubmitBezierTilePattern(GameClient(), ivec2(X0, Y0), W, H, Mask, Tile.m_Index, Tile.m_Flags);
+	OutTopLeft = ivec2(X0, Y0);
+	OutWidth = W;
+	OutHeight = H;
+	return true;
+}
+
+bool CEditorSpec::ApplyBezierFill(SState &State)
+{
+	STileSample Tile;
+	if(!FirstNonAirGameTile(State, Tile))
+		return false;
+	ivec2 TopLeft;
+	int W = 0;
+	int H = 0;
+	std::vector<unsigned char> Mask;
+	if(!ComputeBezierFillRegion(State, TopLeft, W, H, Mask))
+		return false;
+	// An air brush is only meaningful as an eraser, so force destructive in
+	// that case — non-destructive air is a no-op on the server.
+	const bool Destructive = State.m_Destructive || Tile.m_Index == TILE_AIR;
+	return SubmitBezierTilePattern(GameClient(), TopLeft, W, H, Mask, Tile.m_Index, Tile.m_Flags, Destructive);
 }
 
 void CEditorSpec::RenderBezierOverlay(const SState &State) const
@@ -4088,6 +4167,144 @@ void CEditorSpec::RenderBezierOverlay(const SState &State) const
 	{
 		Graphics()->DrawRect(A.m_Pos.x - AnchorRadius, A.m_Pos.y - AnchorRadius, AnchorRadius * 2.0f, AnchorRadius * 2.0f, AnchorColor, IGraphics::CORNER_ALL, AnchorRadius);
 	}
+}
+
+void CEditorSpec::RenderBezierActionPreview(const SState &State) const
+{
+	if(!State.m_ToolPaletteActive)
+		return;
+	if(!BezierIsActiveTool(State.m_SelectedPrimaryTool))
+		return;
+
+	STileSample Tile;
+	if(!FirstNonAirGameTile(State, Tile))
+		return;
+
+	const bool TeleVis = (State.m_SelectedLayer == ELayerGroup::TELE);
+	const vec2 ActSize = BezierActionButtonSize();
+	const vec2 FillPos = BezierActionButtonPos(State.m_ToolPalettePos, TeleVis, 1);
+	const vec2 StrokePos = BezierActionButtonPos(State.m_ToolPalettePos, TeleVis, 2);
+	const bool HoverFill = PointInRect(State.m_CursorWorld, FillPos, ActSize);
+	const bool HoverStroke = !HoverFill && PointInRect(State.m_CursorWorld, StrokePos, ActSize);
+	if(!HoverFill && !HoverStroke)
+		return;
+
+	ivec2 TopLeft;
+	int W = 0;
+	int H = 0;
+	std::vector<unsigned char> Mask;
+	const bool Built = HoverFill ? ComputeBezierFillRegion(State, TopLeft, W, H, Mask)
+	                             : ComputeBezierStrokeRegion(State, TopLeft, W, H, Mask);
+	if(!Built)
+		return;
+
+	const IGraphics::CTextureHandle EntitiesTexture = GameClient()->m_MapImages.GetEntities(MAP_IMAGE_ENTITY_LAYER_TYPE_ALL_EXCEPT_SWITCH);
+	if(!EntitiesTexture.IsValid())
+		return;
+
+	const unsigned char TileIndex = static_cast<unsigned char>(std::clamp(Tile.m_Index, 0, 255));
+	const unsigned char TileFlags = static_cast<unsigned char>(std::clamp(Tile.m_Flags, 0, 255));
+
+	// Batch the entire mask in one Begin/End so the SetColor takes effect.
+	// CRenderMap::RenderTile internally calls QuadsBegin which resets color
+	// to white, so it can't be tinted; we replicate its texture-coord math
+	// inline and set color once between QuadsBegin and the draws.
+	Graphics()->TextureSet(EntitiesTexture);
+	Graphics()->BlendNormal();
+
+	const bool TexArrays = Graphics()->HasTextureArraysSupport();
+	if(TexArrays)
+		Graphics()->QuadsTex3DBegin();
+	else
+		Graphics()->QuadsBegin();
+	Graphics()->SetColor(1.0f, 1.0f, 1.0f, 0.5f);
+
+	float u0, v0, u1, v1, u2, v2, u3, v3;
+	if(TexArrays)
+	{
+		u0 = 0.0f; v0 = 0.0f;
+		u1 = 1.0f; v1 = 0.0f;
+		u2 = 1.0f; v2 = 1.0f;
+		u3 = 0.0f; v3 = 1.0f;
+	}
+	else
+	{
+		float ScreenX0, ScreenY0, ScreenX1, ScreenY1;
+		Graphics()->GetScreen(&ScreenX0, &ScreenY0, &ScreenX1, &ScreenY1);
+		const float Scale = 32.0f;
+		const float TilePixelSize = 1024.0f / Scale;
+		const float FinalTileSize = Scale / std::max(1e-6f, ScreenX1 - ScreenX0) * Graphics()->ScreenWidth();
+		const float FinalTilesetScale = FinalTileSize / TilePixelSize;
+		const float TexSize = 1024.0f;
+		const float Frac = (1.25f / TexSize) * (1.0f / FinalTilesetScale);
+		const float Nudge = (0.5f / TexSize) * (1.0f / FinalTilesetScale);
+		const int tx = TileIndex % 16;
+		const int ty = TileIndex / 16;
+		const int Px0 = tx * (1024 / 16);
+		const int Py0 = ty * (1024 / 16);
+		const int Px1 = Px0 + (1024 / 16) - 1;
+		const int Py1 = Py0 + (1024 / 16) - 1;
+		u0 = Nudge + Px0 / TexSize + Frac;
+		v0 = Nudge + Py0 / TexSize + Frac;
+		u1 = Nudge + Px1 / TexSize - Frac;
+		v1 = Nudge + Py0 / TexSize + Frac;
+		u2 = Nudge + Px1 / TexSize - Frac;
+		v2 = Nudge + Py1 / TexSize - Frac;
+		u3 = Nudge + Px0 / TexSize + Frac;
+		v3 = Nudge + Py1 / TexSize - Frac;
+	}
+
+	if(TileFlags & TILEFLAG_XFLIP)
+	{
+		std::swap(u0, u2);
+		std::swap(u1, u3);
+	}
+	if(TileFlags & TILEFLAG_YFLIP)
+	{
+		std::swap(v0, v2);
+		std::swap(v1, v3);
+	}
+	if(TileFlags & TILEFLAG_ROTATE)
+	{
+		const float Tu = u0;
+		u0 = u3;
+		u3 = u2;
+		u2 = u1;
+		u1 = Tu;
+		const float Tv = v0;
+		v0 = v3;
+		v3 = v2;
+		v2 = v1;
+		v1 = Tv;
+	}
+
+	for(int y = 0; y < H; ++y)
+	{
+		for(int x = 0; x < W; ++x)
+		{
+			if(!Mask[(size_t)y * W + x])
+				continue;
+			const float WX = (TopLeft.x + x) * 32.0f;
+			const float WY = (TopLeft.y + y) * 32.0f;
+			IGraphics::CQuadItem Item(WX, WY, 32.0f, 32.0f);
+			if(TexArrays)
+			{
+				Graphics()->QuadsSetSubsetFree(u0, v0, u1, v1, u2, v2, u3, v3, TileIndex);
+				Graphics()->QuadsTex3DDrawTL(&Item, 1);
+			}
+			else
+			{
+				Graphics()->QuadsSetSubsetFree(u0, v0, u1, v1, u2, v2, u3, v3);
+				Graphics()->QuadsDrawTL(&Item, 1);
+			}
+		}
+	}
+
+	if(TexArrays)
+		Graphics()->QuadsTex3DEnd();
+	else
+		Graphics()->QuadsEnd();
+	Graphics()->SetColor(1.0f, 1.0f, 1.0f, 1.0f);
 }
 
 void CEditorSpec::RenderBezierMenu(const SState &State) const
@@ -4212,12 +4429,12 @@ void CEditorSpec::RenderBezierMenu(const SState &State) const
 	TextRender()->TextOutlineColor(TextRender()->DefaultTextOutlineColor());
 }
 
-bool CEditorSpec::ApplyBezierStroke(SState &State)
+bool CEditorSpec::ComputeBezierStrokeRegion(const SState &State, ivec2 &OutTopLeft, int &OutWidth, int &OutHeight, std::vector<unsigned char> &OutMask) const
 {
+	OutWidth = 0;
+	OutHeight = 0;
+	OutMask.clear();
 	if(State.m_BezierPath.m_vAnchors.size() < 2)
-		return false;
-	STileSample Tile;
-	if(!FirstNonAirGameTile(State, Tile))
 		return false;
 
 	std::vector<vec2> Pts;
@@ -4255,15 +4472,33 @@ bool CEditorSpec::ApplyBezierStroke(SState &State)
 	const int W = X1 - X0 + 1;
 	const int H = Y1 - Y0 + 1;
 	const float R2 = Radius * Radius;
-	std::vector<unsigned char> Mask((size_t)W * H, 0);
+	OutMask.assign((size_t)W * H, 0);
 	for(int ty = 0; ty < H; ++ty)
 	{
 		for(int tx = 0; tx < W; ++tx)
 		{
 			const vec2 Center((X0 + tx) * 32.0f + 16.0f, (Y0 + ty) * 32.0f + 16.0f);
 			if(MinDistanceSquaredToPolyline(Pts, Center) <= R2)
-				Mask[ty * W + tx] = 1;
+				OutMask[ty * W + tx] = 1;
 		}
 	}
-	return SubmitBezierTilePattern(GameClient(), ivec2(X0, Y0), W, H, Mask, Tile.m_Index, Tile.m_Flags);
+	OutTopLeft = ivec2(X0, Y0);
+	OutWidth = W;
+	OutHeight = H;
+	return true;
+}
+
+bool CEditorSpec::ApplyBezierStroke(SState &State)
+{
+	STileSample Tile;
+	if(!FirstNonAirGameTile(State, Tile))
+		return false;
+	ivec2 TopLeft;
+	int W = 0;
+	int H = 0;
+	std::vector<unsigned char> Mask;
+	if(!ComputeBezierStrokeRegion(State, TopLeft, W, H, Mask))
+		return false;
+	const bool Destructive = State.m_Destructive || Tile.m_Index == TILE_AIR;
+	return SubmitBezierTilePattern(GameClient(), TopLeft, W, H, Mask, Tile.m_Index, Tile.m_Flags, Destructive);
 }

@@ -679,6 +679,11 @@ int CGameClient::OnSnapInput(int *pData, bool Dummy, bool Force)
 
 void CGameClient::OnConnected()
 {
+	// Drop any tile-change messages queued against the previous map.
+	// The pTilemap pointers they hold belong to the old IMap and are
+	// about to dangle once m_Layers.Init reassigns them.
+	m_DirtyTiles.clear();
+
 	const char *pConnectCaption = DemoPlayer()->IsPlaying() ? Localize("Preparing demo playback") : Localize("Connected");
 	const char *pLoadMapContent = Localize("Initializing map logic");
 	// render loading before skip is calculated
@@ -1545,8 +1550,13 @@ void CGameClient::FlushDirtyTiles()
 {
 	if(m_DirtyTiles.empty())
 		return;
+	CLayers *pLayers = Layers();
 	for(const SDirtyTile &Dirty : m_DirtyTiles)
 	{
+		// Skip stale entries left over from a map transition. The pointer
+		// is only safe to follow if the current CLayers still references it.
+		if(!pLayers || !pLayers->IsTilemapValid(Dirty.m_pTilemap))
+			continue;
 		m_MapLayersBackground.UpdateTileInPlace(Dirty.m_pTilemap, Dirty.m_X, Dirty.m_Y);
 		m_MapLayersForeground.UpdateTileInPlace(Dirty.m_pTilemap, Dirty.m_X, Dirty.m_Y);
 	}

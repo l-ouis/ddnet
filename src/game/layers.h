@@ -32,6 +32,7 @@ public:
 	CMapItemLayerTilemap *SwitchLayer() const { return m_pSwitchLayer; }
 	CMapItemLayerTilemap *TuneLayer() const { return m_pTuneLayer; }
 	CMapItemLayerTilemap *GetTilemapForLayer(int Layer) const;
+	bool IsTilemapValid(const CMapItemLayerTilemap *pTilemap) const;
 
 private:
 	int m_GroupsNum;
