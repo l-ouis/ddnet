@@ -257,6 +257,29 @@ public:
 	std::unordered_map<int64_t, SLiveTileState> m_LiveTileStates;
 	std::unordered_map<int64_t, SLiveTeleTileState> m_LiveTeleTileStates;
 
+	// Pending live-tile state to ship to a newly-connected client. We can't
+	// dump all of these as vital messages on enter — the per-connection resend
+	// ring is only 32 KiB, so a few hundred entries already overflows it and
+	// causes silent state divergence. Instead the snapshot is captured at
+	// enter time and drained at a bounded rate per tick.
+	struct SPendingLiveTileSend
+	{
+		std::vector<SLiveTileState> m_Tiles;
+		std::vector<SLiveTeleTileState> m_TeleTiles;
+		size_t m_TileIndex = 0;
+		size_t m_TeleTileIndex = 0;
+		bool Empty() const { return m_TileIndex >= m_Tiles.size() && m_TeleTileIndex >= m_TeleTiles.size(); }
+		void Clear()
+		{
+			m_Tiles.clear();
+			m_TeleTiles.clear();
+			m_TileIndex = 0;
+			m_TeleTileIndex = 0;
+		}
+	};
+	SPendingLiveTileSend m_aPendingLiveTileSends[MAX_CLIENTS];
+	void DrainPendingLiveTileSends();
+
 	// returns last input if available otherwise nulled PlayerInput object
 	// ClientId has to be valid
 	CNetObj_PlayerInput GetLastPlayerInput(int ClientId) const;
@@ -476,7 +499,7 @@ public:
 private:
 	void RememberLiveTileModification(int Layer, int X, int Y, int Index, int Flags);
 	void RememberLiveTeleTileModification(int X, int Y, int Index, int Flags, int Number);
-	void SendLiveTileStateToClient(int ClientId) const;
+	void SendLiveTileStateToClient(int ClientId);
 
 	// starting 1 to make 0 the special value "no client id"
 	uint32_t m_NextUniqueClientId = 1;

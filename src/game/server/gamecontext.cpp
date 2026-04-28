@@ -1167,6 +1167,7 @@ void CGameContext::OnTick()
 	// check tuning
 	CheckPureTuning();
 	TestLiveTileModification();
+	DrainPendingLiveTileSends();
 
 	if(m_TeeHistorianActive)
 	{
@@ -1991,6 +1992,7 @@ void CGameContext::OnClientDrop(int ClientId, const char *pReason)
 		m_aPendingEditorSpecDrawSegments[ClientId].clear();
 		m_aEditorSpecNextDrawBroadcastTick[ClientId] = 0;
 	}
+	m_aPendingLiveTileSends[ClientId].Clear();
 	delete m_apPlayers[ClientId];
 	m_apPlayers[ClientId] = nullptr;
 
@@ -2836,52 +2838,94 @@ void CGameContext::SendEditorSpecCursorUpdate(int ClientId, bool Active, int Cur
 	}
 }
 
-void CGameContext::SendLiveTileStateToClient(int ClientId) const
+void CGameContext::SendLiveTileStateToClient(int ClientId)
 {
-	if(m_LiveTileStates.empty() && m_LiveTeleTileStates.empty())
-	{
-		return;
-	}
 	if(ClientId < 0 || ClientId >= MAX_CLIENTS)
 	{
 		return;
 	}
-
+	SPendingLiveTileSend &Pending = m_aPendingLiveTileSends[ClientId];
+	Pending.Clear();
+	if(m_LiveTileStates.empty() && m_LiveTeleTileStates.empty())
+	{
+		return;
+	}
+	Pending.m_Tiles.reserve(m_LiveTileStates.size());
 	for(const auto &Entry : m_LiveTileStates)
 	{
-		const SLiveTileState &State = Entry.second;
-		if(State.m_Layer == LAYER_TELE)
+		if(Entry.second.m_Layer == LAYER_TELE)
 		{
 			continue;
 		}
-		CNetMsg_Sv_ModifyTile Msg;
-		Msg.m_X = State.m_X;
-		Msg.m_Y = State.m_Y;
-		Msg.m_Layer = State.m_Layer;
-		Msg.m_Index = State.m_Index;
-		Msg.m_Flags = State.m_Flags;
-		Server()->SendPackMsg(&Msg, MSGFLAG_VITAL | MSGFLAG_NORECORD, ClientId);
+		Pending.m_Tiles.push_back(Entry.second);
 	}
-
+	Pending.m_TeleTiles.reserve(m_LiveTeleTileStates.size());
 	for(const auto &Entry : m_LiveTeleTileStates)
 	{
-		const SLiveTeleTileState &TeleState = Entry.second;
+		Pending.m_TeleTiles.push_back(Entry.second);
+	}
+}
 
-		CNetMsg_Sv_ModifyTile TileMsg;
-		TileMsg.m_X = TeleState.m_X;
-		TileMsg.m_Y = TeleState.m_Y;
-		TileMsg.m_Layer = LAYER_TELE;
-		TileMsg.m_Index = TeleState.m_Index;
-		TileMsg.m_Flags = TeleState.m_Flags;
-		Server()->SendPackMsg(&TileMsg, MSGFLAG_VITAL | MSGFLAG_NORECORD, ClientId);
+void CGameContext::DrainPendingLiveTileSends()
+{
+	// Cap modify-tile messages per client per tick. The per-connection vital
+	// resend ring is 32 KiB and each modify-tile vital costs ~30-80 B once
+	// queued, so this leaves plenty of headroom alongside normal game traffic
+	// while still draining a few thousand entries per second.
+	constexpr int kMaxSendsPerTickPerClient = 16;
 
-		CNetMsg_Sv_ModifyTeleTile TeleMsg;
-		TeleMsg.m_X = TeleState.m_X;
-		TeleMsg.m_Y = TeleState.m_Y;
-		TeleMsg.m_Index = TeleState.m_Index;
-		TeleMsg.m_Flags = TeleState.m_Flags;
-		TeleMsg.m_Number = TeleState.m_Number;
-		Server()->SendPackMsg(&TeleMsg, MSGFLAG_VITAL | MSGFLAG_NORECORD, ClientId);
+	for(int ClientId = 0; ClientId < MAX_CLIENTS; ++ClientId)
+	{
+		SPendingLiveTileSend &Pending = m_aPendingLiveTileSends[ClientId];
+		if(Pending.Empty())
+		{
+			continue;
+		}
+		if(!Server()->ClientIngame(ClientId))
+		{
+			Pending.Clear();
+			continue;
+		}
+		int Sent = 0;
+		while(Sent < kMaxSendsPerTickPerClient && Pending.m_TileIndex < Pending.m_Tiles.size())
+		{
+			const SLiveTileState &State = Pending.m_Tiles[Pending.m_TileIndex++];
+			CNetMsg_Sv_ModifyTile Msg;
+			Msg.m_X = State.m_X;
+			Msg.m_Y = State.m_Y;
+			Msg.m_Layer = State.m_Layer;
+			Msg.m_Index = State.m_Index;
+			Msg.m_Flags = State.m_Flags;
+			Server()->SendPackMsg(&Msg, MSGFLAG_VITAL | MSGFLAG_NORECORD, ClientId);
+			++Sent;
+		}
+		// Tele tiles each cost 2 vitals (Sv_ModifyTile + Sv_ModifyTeleTile),
+		// so charge 2 toward the budget per entry.
+		while(Sent + 1 < kMaxSendsPerTickPerClient && Pending.m_TeleTileIndex < Pending.m_TeleTiles.size())
+		{
+			const SLiveTeleTileState &TeleState = Pending.m_TeleTiles[Pending.m_TeleTileIndex++];
+
+			CNetMsg_Sv_ModifyTile TileMsg;
+			TileMsg.m_X = TeleState.m_X;
+			TileMsg.m_Y = TeleState.m_Y;
+			TileMsg.m_Layer = LAYER_TELE;
+			TileMsg.m_Index = TeleState.m_Index;
+			TileMsg.m_Flags = TeleState.m_Flags;
+			Server()->SendPackMsg(&TileMsg, MSGFLAG_VITAL | MSGFLAG_NORECORD, ClientId);
+
+			CNetMsg_Sv_ModifyTeleTile TeleMsg;
+			TeleMsg.m_X = TeleState.m_X;
+			TeleMsg.m_Y = TeleState.m_Y;
+			TeleMsg.m_Index = TeleState.m_Index;
+			TeleMsg.m_Flags = TeleState.m_Flags;
+			TeleMsg.m_Number = TeleState.m_Number;
+			Server()->SendPackMsg(&TeleMsg, MSGFLAG_VITAL | MSGFLAG_NORECORD, ClientId);
+			Sent += 2;
+		}
+		if(Pending.Empty())
+		{
+			Pending.Clear();
+		}
 	}
 }
 
@@ -4790,6 +4834,10 @@ void CGameContext::CreateAllEntities(bool Initial)
 	{
 		m_LiveTileStates.clear();
 		m_LiveTeleTileStates.clear();
+		for(auto &Pending : m_aPendingLiveTileSends)
+		{
+			Pending.Clear();
+		}
 	}
 
 	const CTile *pTiles = m_Collision.GameLayer();

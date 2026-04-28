@@ -2040,6 +2040,14 @@ void CServer::OnNetMsgReady(int ClientId)
 		GameServer()->OnClientConnected(ClientId, pPersistentData);
 	}
 
+	// Game-speed must be in the client before it inits m_PredictedTime /
+	// m_aGameTime from the first snapshot, otherwise it inits at scale 1.0
+	// and only re-anchors when NETMSG_GAME_SPEED arrives. Snapshots are
+	// non-vital and can race ahead of a later vital, so send the scale here
+	// (state READY) — well before INGAME, when snapshot flow opens.
+	if(!IsSixup(ClientId) && m_GameSpeedScale != 1.0f)
+		SendGameSpeed(ClientId);
+
 	// Make rejoining session possible before timeout protection triggers
 	// https://github.com/ddnet/ddnet/pull/301
 	SendConnectionReady(ClientId);
@@ -2062,8 +2070,6 @@ void CServer::OnNetMsgEnterGame(int ClientId)
 	if(!IsSixup(ClientId))
 	{
 		SendServerInfo(ClientAddr(ClientId), -1, SERVERINFO_EXTENDED, false);
-		if(m_GameSpeedScale != 1.0f)
-			SendGameSpeed(ClientId);
 	}
 	else
 	{
