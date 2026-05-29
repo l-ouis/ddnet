@@ -21,6 +21,7 @@ def find_cxxbridge(version):
 
 
 FILES = {
+	"src/accounts/lib.rs": "src/rust-bridge/cpp/accounts",
 	"src/engine/shared/rust_version.rs": "src/rust-bridge/engine/shared/rust_version",
 	"src/engine/shared/snapshot/builder.rs": "src/rust-bridge/engine/shared/snapshot/builder",
 	"src/engine/shared/snapshot/delta.rs": "src/rust-bridge/engine/shared/snapshot/delta",

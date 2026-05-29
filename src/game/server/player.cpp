@@ -28,6 +28,7 @@ CPlayer::CPlayer(CGameContext *pGameServer, uint32_t UniqueClientId, int ClientI
 {
 	m_pGameServer = pGameServer;
 	m_ClientId = ClientId;
+	m_AccountId = Server()->ClientAccountId(ClientId);
 	dbg_assert(GameServer()->m_pController->IsValidTeam(Team), "Invalid Team: %d", Team);
 	m_Team = Team;
 	m_NumInputs = 0;

@@ -62,6 +62,8 @@ public:
 	virtual const char *ClientName(int ClientId) const = 0;
 	virtual const char *ClientClan(int ClientId) const = 0;
 	virtual int ClientCountry(int ClientId) const = 0;
+	// DDNet account id of the client, or -1 if not logged in (guest / legacy UDP).
+	virtual int64_t ClientAccountId(int ClientId) const = 0;
 	virtual bool ClientSlotEmpty(int ClientId) const = 0;
 	virtual bool ClientIngame(int ClientId) const = 0;
 	virtual bool GetClientInfo(int ClientId, CClientInfo *pInfo) const = 0;

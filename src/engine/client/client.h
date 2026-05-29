@@ -25,10 +25,15 @@
 #include <engine/textrender.h>
 #include <engine/warning.h>
 
+#include <engine/shared/network_quic.h>
+
+#include <cpp/accounts.h>
+
 #include <chrono>
 #include <deque>
 #include <memory>
 #include <mutex>
+#include <optional>
 
 class CDemoEdit;
 class IDemoRecorder;
@@ -396,7 +401,7 @@ public:
 
 	bool IsSixup() const override { return m_Sixup; }
 
-	const NETADDR &ServerAddress() const override { return *m_aNetClient[CONN_MAIN].ServerAddress(); }
+	const NETADDR &ServerAddress() const override { return m_QuicMode ? m_QuicServerAddr : *m_aNetClient[CONN_MAIN].ServerAddress(); }
 	int ConnectNetTypes() const override;
 	const char *ConnectAddressString() const override { return m_aConnectAddressStr; }
 	const char *MapDownloadName() const override { return m_aMapdownloadName; }
@@ -421,6 +426,24 @@ public:
 
 	static void Con_Connect(IConsole::IResult *pResult, void *pUserData);
 	static void Con_Disconnect(IConsole::IResult *pResult, void *pUserData);
+
+	// DDNet account login (uses the QUIC account-client bridge).
+	std::optional<rust::Box<AccountClient>> m_pAccountClient;
+	bool EnsureAccountClient();
+	static void Con_AccountLoginEmail(IConsole::IResult *pResult, void *pUserData);
+	static void Con_AccountLoginToken(IConsole::IResult *pResult, void *pUserData);
+	static void Con_AccountLogout(IConsole::IResult *pResult, void *pUserData);
+
+	// Experimental QUIC secure connection (presents the account certificate).
+	// When m_QuicMode is set, the main connection's game protocol is routed
+	// over m_QuicClient instead of the legacy UDP m_aNetClient[CONN_MAIN].
+	CQuicClient m_QuicClient;
+	CQuicClient::EState m_QuicClientState = CQuicClient::STATE_OFFLINE;
+	bool m_QuicMode = false;
+	NETADDR m_QuicServerAddr = {};
+	void ConnectQuic(const char *pAddress, const char *pFingerprintHex);
+	void UpdateQuicClient();
+	static void Con_ConnectQuic(IConsole::IResult *pResult, void *pUserData);
 
 	static void Con_DummyConnect(IConsole::IResult *pResult, void *pUserData);
 	static void Con_DummyDisconnect(IConsole::IResult *pResult, void *pUserData);

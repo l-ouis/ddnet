@@ -223,7 +223,10 @@ int CClient::SendMsg(int Conn, CMsgPacker *pMsg, int Flags)
 
 	if(!(Flags & MSGFLAG_NOSEND))
 	{
-		m_aNetClient[Conn].Send(&Packet);
+		if(m_QuicMode && Conn == CONN_MAIN)
+			m_QuicClient.Send(&Packet);
+		else
+			m_aNetClient[Conn].Send(&Packet);
 	}
 
 	return 0;
@@ -341,6 +344,10 @@ float CClient::GotMaplistPercentage() const
 
 bool CClient::ConnectionProblems() const
 {
+	// The QUIC transport tracks its own health; the legacy UDP connection is
+	// idle in QUIC mode, so don't report its (perpetual) "problems".
+	if(m_QuicMode)
+		return false;
 	return m_aNetClient[g_Config.m_ClDummy].GotProblems(MaxLatencyTicks() * time_freq() / GameTickSpeed());
 }
 
@@ -734,6 +741,13 @@ void CClient::DisconnectWithReason(const char *pReason)
 {
 	if(pReason != nullptr && pReason[0] == '\0')
 		pReason = nullptr;
+
+	if(m_QuicMode)
+	{
+		m_QuicClient.Disconnect();
+		m_QuicMode = false;
+		m_QuicClientState = CQuicClient::STATE_OFFLINE;
+	}
 
 	DummyDisconnect(pReason);
 
@@ -2630,12 +2644,14 @@ void CClient::PumpNetwork()
 		NetClient.Update();
 	}
 
+	UpdateQuicClient();
+
 	if(State() != IClient::STATE_DEMOPLAYBACK)
 	{
 		// check for errors of main and dummy
 		if(State() != IClient::STATE_OFFLINE && State() < IClient::STATE_QUITTING)
 		{
-			if(m_aNetClient[CONN_MAIN].State() == NETSTATE_OFFLINE)
+			if(!m_QuicMode && m_aNetClient[CONN_MAIN].State() == NETSTATE_OFFLINE)
 			{
 				// This will also disconnect the dummy, so the branch below is an `else if`
 				Disconnect();
@@ -3603,6 +3619,191 @@ void CClient::Con_Disconnect(IConsole::IResult *pResult, void *pUserData)
 	pSelf->Disconnect();
 }
 
+bool CClient::EnsureAccountClient()
+{
+	if(m_pAccountClient.has_value())
+		return true;
+	if(g_Config.m_ClAccountServer[0] == '\0')
+	{
+		m_pConsole->Print(IConsole::OUTPUT_LEVEL_STANDARD, "account", "cl_account_server is not set");
+		return false;
+	}
+	Storage()->CreateFolder("account", IStorage::TYPE_SAVE);
+	char aDir[IO_MAX_PATH_LENGTH];
+	Storage()->GetCompletePath(IStorage::TYPE_SAVE, "account", aDir, sizeof(aDir));
+	rust::Box<AccountClient> Client = account_client_open(rust::Str(g_Config.m_ClAccountServer), rust::Str(aDir));
+	if(!std::string(Client->error()).empty())
+	{
+		m_pConsole->Print(IConsole::OUTPUT_LEVEL_STANDARD, "account", std::string(Client->error()).c_str());
+		return false;
+	}
+	m_pAccountClient.emplace(std::move(Client));
+	return true;
+}
+
+void CClient::Con_AccountLoginEmail(IConsole::IResult *pResult, void *pUserData)
+{
+	CClient *pSelf = (CClient *)pUserData;
+	if(!pSelf->EnsureAccountClient())
+		return;
+	std::string Error = std::string((*pSelf->m_pAccountClient)->request_login_token_email(rust::Str(pResult->GetString(0))));
+	if(Error.empty())
+		pSelf->m_pConsole->Print(IConsole::OUTPUT_LEVEL_STANDARD, "account", "a login code was sent to your email; complete with: account_login_token <code>");
+	else
+		pSelf->m_pConsole->Print(IConsole::OUTPUT_LEVEL_STANDARD, "account", Error.c_str());
+}
+
+void CClient::Con_AccountLoginToken(IConsole::IResult *pResult, void *pUserData)
+{
+	CClient *pSelf = (CClient *)pUserData;
+	if(!pSelf->EnsureAccountClient())
+		return;
+	AccountClientLogin Login = (*pSelf->m_pAccountClient)->login(rust::String(pResult->GetString(0)));
+	if(std::string(Login.error).empty())
+	{
+		char aBuf[64];
+		str_format(aBuf, sizeof(aBuf), "logged in as account #%lld", (long long)Login.account_id);
+		pSelf->m_pConsole->Print(IConsole::OUTPUT_LEVEL_STANDARD, "account", aBuf);
+	}
+	else
+		pSelf->m_pConsole->Print(IConsole::OUTPUT_LEVEL_STANDARD, "account", std::string(Login.error).c_str());
+}
+
+void CClient::Con_AccountLogout(IConsole::IResult *pResult, void *pUserData)
+{
+	CClient *pSelf = (CClient *)pUserData;
+	if(!pSelf->EnsureAccountClient())
+		return;
+	std::string Error = std::string((*pSelf->m_pAccountClient)->logout());
+	pSelf->m_pConsole->Print(IConsole::OUTPUT_LEVEL_STANDARD, "account", Error.empty() ? "logged out" : Error.c_str());
+}
+
+void CClient::ConnectQuic(const char *pAddress, const char *pFingerprintHex)
+{
+	NETADDR Addr;
+	if(net_addr_from_str(&Addr, pAddress) != 0)
+	{
+		m_pConsole->Print(IConsole::OUTPUT_LEVEL_STANDARD, "quic", "invalid address");
+		return;
+	}
+	if(Addr.port == 0)
+		Addr.port = 8313;
+
+	// Open the (persisted) account session if available, so a previously
+	// logged-in user presents their account certificate without re-logging in.
+	EnsureAccountClient();
+
+	// Our client certificate: account-signed if logged in, else self-signed.
+	std::vector<unsigned char> CertDer, KeyDer;
+	if(m_pAccountClient.has_value())
+	{
+		AccountSignedCert Signed = (*m_pAccountClient)->sign();
+		if(std::string(Signed.error).empty())
+		{
+			CertDer.assign(Signed.cert_der.begin(), Signed.cert_der.end());
+			KeyDer.assign(Signed.key_der.begin(), Signed.key_der.end());
+		}
+	}
+	if(CertDer.empty())
+	{
+		QuicCert SelfSigned = quic_generate_self_signed();
+		if(!std::string(SelfSigned.error).empty())
+		{
+			m_pConsole->Print(IConsole::OUTPUT_LEVEL_STANDARD, "quic", "failed to create a client certificate");
+			return;
+		}
+		CertDer.assign(SelfSigned.cert_der.begin(), SelfSigned.cert_der.end());
+		KeyDer.assign(SelfSigned.key_der.begin(), SelfSigned.key_der.end());
+		m_pConsole->Print(IConsole::OUTPUT_LEVEL_STANDARD, "quic", "connecting without an account (guest)");
+	}
+
+	unsigned char aPin[32];
+	mem_zero(aPin, sizeof(aPin));
+	int PinSize = 0;
+	if(pFingerprintHex && pFingerprintHex[0] != '\0')
+	{
+		if(str_hex_decode(aPin, sizeof(aPin), pFingerprintHex) != 0)
+		{
+			m_pConsole->Print(IConsole::OUTPUT_LEVEL_STANDARD, "quic", "invalid cert-sha256 fingerprint (expected 64 hex chars)");
+			return;
+		}
+		PinSize = sizeof(aPin);
+	}
+	else
+	{
+		m_pConsole->Print(IConsole::OUTPUT_LEVEL_STANDARD, "quic", "WARNING: no fingerprint given, server identity is NOT verified");
+	}
+
+	// Tear down any existing connection first.
+	if(State() != IClient::STATE_OFFLINE)
+		Disconnect();
+
+	m_QuicClientState = CQuicClient::STATE_OFFLINE;
+	if(!m_QuicClient.Connect(Addr, aPin, PinSize, CertDer.data(), (int)CertDer.size(), KeyDer.data(), (int)KeyDer.size()))
+	{
+		m_pConsole->Print(IConsole::OUTPUT_LEVEL_STANDARD, "quic", m_QuicClient.Error());
+		return;
+	}
+	m_QuicMode = true;
+	m_QuicServerAddr = Addr;
+	m_Sixup = false;
+	m_ConnectionId = RandomUuid();
+	SetState(IClient::STATE_CONNECTING);
+	m_pConsole->Print(IConsole::OUTPUT_LEVEL_STANDARD, "quic", "connecting over QUIC...");
+}
+
+void CClient::UpdateQuicClient()
+{
+	m_QuicClient.Update();
+	const CQuicClient::EState NewState = m_QuicClient.State();
+	if(NewState != m_QuicClientState)
+	{
+		m_QuicClientState = NewState;
+		switch(NewState)
+		{
+		case CQuicClient::STATE_CONNECTING:
+			m_pConsole->Print(IConsole::OUTPUT_LEVEL_STANDARD, "quic", "connecting");
+			break;
+		case CQuicClient::STATE_ONLINE:
+			m_pConsole->Print(IConsole::OUTPUT_LEVEL_STANDARD, "quic", "connected (secure QUIC), sending info");
+			// Drive the same join handshake as a legacy connection that just
+			// reached NETSTATE_ONLINE, but over the QUIC transport.
+			if(m_QuicMode && State() == IClient::STATE_CONNECTING)
+			{
+				SetState(IClient::STATE_LOADING);
+				SetLoadingStateDetail(IClient::LOADING_STATE_DETAIL_INITIAL);
+				SendInfo(CONN_MAIN);
+			}
+			break;
+		case CQuicClient::STATE_ERROR:
+			m_pConsole->Print(IConsole::OUTPUT_LEVEL_STANDARD, "quic", m_QuicClient.Error());
+			if(m_QuicMode)
+			{
+				m_QuicMode = false;
+				if(State() != IClient::STATE_OFFLINE && State() != IClient::STATE_QUITTING && State() != IClient::STATE_RESTARTING)
+					SetState(IClient::STATE_OFFLINE);
+			}
+			break;
+		default:
+			break;
+		}
+	}
+
+	// Route received game messages through the normal server-packet processing.
+	CNetChunk Chunk;
+	while(m_QuicClient.Recv(&Chunk))
+	{
+		if(m_QuicMode)
+			ProcessServerPacket(&Chunk, CONN_MAIN, false);
+	}
+}
+
+void CClient::Con_ConnectQuic(IConsole::IResult *pResult, void *pUserData)
+{
+	CClient *pSelf = (CClient *)pUserData;
+	pSelf->ConnectQuic(pResult->GetString(0), pResult->NumArguments() > 1 ? pResult->GetString(1) : "");
+}
+
 void CClient::Con_DummyConnect(IConsole::IResult *pResult, void *pUserData)
 {
 	CClient *pSelf = (CClient *)pUserData;
@@ -4561,6 +4762,10 @@ void CClient::RegisterCommands()
 	m_pConsole->Register("minimize", "", CFGFLAG_CLIENT | CFGFLAG_STORE, Con_Minimize, this, "Minimize the client");
 	m_pConsole->Register("connect", "r[host|ip]", CFGFLAG_CLIENT, Con_Connect, this, "Connect to the specified host/ip");
 	m_pConsole->Register("disconnect", "", CFGFLAG_CLIENT, Con_Disconnect, this, "Disconnect from the server");
+	m_pConsole->Register("account_login", "s[email]", CFGFLAG_CLIENT, Con_AccountLoginEmail, this, "Request a DDNet account login code by email");
+	m_pConsole->Register("account_login_token", "s[code]", CFGFLAG_CLIENT, Con_AccountLoginToken, this, "Complete DDNet account login with the emailed code");
+	m_pConsole->Register("account_logout", "", CFGFLAG_CLIENT, Con_AccountLogout, this, "Log out of your DDNet account");
+	m_pConsole->Register("connect_quic", "s[ip:port] ?s[cert-sha256-hex]", CFGFLAG_CLIENT, Con_ConnectQuic, this, "Open a QUIC secure connection presenting your account certificate (experimental)");
 	m_pConsole->Register("ping", "", CFGFLAG_CLIENT, Con_Ping, this, "Ping the current server");
 	m_pConsole->Register("screenshot", "", CFGFLAG_CLIENT | CFGFLAG_STORE, Con_Screenshot, this, "Take a screenshot");
 	m_pConsole->Register("net_reset", "", CFGFLAG_CLIENT, ConNetReset, this, "Rebinds the client's listening address and port");

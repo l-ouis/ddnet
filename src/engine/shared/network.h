@@ -441,6 +441,10 @@ class CNetServer
 
 	unsigned char m_aSecurityTokenSeed[16];
 
+	// Slots reserved for clients on another transport (e.g. QUIC) so that
+	// TryAcceptClient does not hand them to a legacy UDP client.
+	bool m_aReserved[NET_MAX_CLIENTS] = {};
+
 	// vanilla connect flood detection
 	int64_t m_VConnFirst;
 	int m_VConnNum;
@@ -475,6 +479,14 @@ public:
 	int Recv(CNetChunk *pChunk, SECURITY_TOKEN *pResponseToken);
 	int Send(CNetChunk *pChunk);
 	void Update();
+
+	// Reserve/release a client slot so it is not handed to a legacy UDP client
+	// (used for clients connected over the QUIC transport).
+	void ReserveSlot(int ClientId, bool Reserved)
+	{
+		if(ClientId >= 0 && ClientId < NET_MAX_CLIENTS)
+			m_aReserved[ClientId] = Reserved;
+	}
 
 	//
 	void Drop(int ClientId, const char *pReason);

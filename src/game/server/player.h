@@ -134,6 +134,9 @@ private:
 	bool m_Spawning;
 	bool m_WeakHookSpawn;
 	int m_ClientId;
+	// DDNet account id (resolved from the client's QUIC certificate), or -1 for
+	// guests / legacy-UDP clients. Available to game logic and the rank DB.
+	int64_t m_AccountId;
 	int m_Team;
 
 	// used for spectator mode

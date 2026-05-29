@@ -18,6 +18,7 @@
 #include <engine/shared/http.h>
 #include <engine/shared/netban.h>
 #include <engine/shared/network.h>
+#include <engine/shared/network_quic.h>
 #include <engine/shared/protocol.h>
 #include <engine/shared/snapshot.h>
 #include <engine/shared/uuid_manager.h>
@@ -160,6 +161,16 @@ public:
 		char m_aName[MAX_NAME_LENGTH];
 		char m_aClan[MAX_CLAN_LENGTH];
 		int m_Country;
+		// DDNet account id of this client (resolved from its QUIC certificate),
+		// or -1 if the client is not logged in / connected over legacy UDP.
+		int64_t m_AccountId = -1;
+		// True if this client is connected over the QUIC secure transport
+		// (rather than the legacy UDP CNetServer). m_QuicId is its CQuicServer
+		// slot; m_QuicAddr is a placeholder peer address.
+		bool m_Quic = false;
+		int m_QuicId = -1;
+		NETADDR m_QuicAddr = {};
+		std::array<char, NETADDR_MAXSTRSIZE> m_aQuicAddrString = {};
 		std::optional<int> m_Score;
 		int m_AuthKey;
 		int m_AuthTries;
@@ -218,6 +229,18 @@ public:
 	rust::Box<CSnapshotBuilder> m_pSnapshotBuilder;
 	CSnapIdPool m_IdPool;
 	CNetServer m_NetServer;
+	// Experimental QUIC secure transport + accounts endpoint (sv_quic). Runs
+	// alongside the legacy UDP transport; clients connecting over QUIC are
+	// authenticated by certificate and resolved to an account id.
+	CQuicServer m_QuicServer;
+	std::optional<rust::Box<AccountGameServer>> m_pAccountDb;
+	char m_aQuicFingerprint[65] = {0}; // hex SHA-256 of the server's QUIC pubkey
+	void InitQuic();
+	void UpdateQuic();
+	void SendPacket(CNetChunk *pPacket); // routes to QUIC or legacy UDP per client
+	int m_aQuicToClient[MAX_CLIENTS]; // CQuicServer slot -> CServer client id
+	static int NewQuicClientCallback(int QuicId, void *pUser, bool Sixup);
+	static int DelQuicClientCallback(int QuicId, const char *pReason, void *pUser);
 	CEcon m_Econ;
 	CFifo m_Fifo;
 	CServerBan m_ServerBan;
@@ -319,6 +342,7 @@ public:
 	const char *ClientName(int ClientId) const override;
 	const char *ClientClan(int ClientId) const override;
 	int ClientCountry(int ClientId) const override;
+	int64_t ClientAccountId(int ClientId) const override;
 	bool ClientSlotEmpty(int ClientId) const override;
 	bool ClientIngame(int ClientId) const override;
 	int Port() const override;

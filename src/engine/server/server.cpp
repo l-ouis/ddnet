@@ -45,6 +45,8 @@
 
 #include <game/version.h>
 
+#include <cpp/accounts.h>
+
 #include <zlib.h>
 
 #include <chrono>
@@ -736,6 +738,10 @@ const NETADDR *CServer::ClientAddr(int ClientId) const
 {
 	dbg_assert(ClientId >= 0 && ClientId < MAX_CLIENTS, "Invalid ClientId: %d", ClientId);
 	dbg_assert(m_aClients[ClientId].m_State != CServer::CClient::STATE_EMPTY, "Client slot %d is empty", ClientId);
+	if(m_aClients[ClientId].m_Quic)
+	{
+		return &m_aClients[ClientId].m_QuicAddr;
+	}
 	if(m_aClients[ClientId].m_DebugDummy)
 	{
 		return &m_aClients[ClientId].m_DebugDummyAddr;
@@ -747,6 +753,10 @@ const std::array<char, NETADDR_MAXSTRSIZE> &CServer::ClientAddrStringImpl(int Cl
 {
 	dbg_assert(ClientId >= 0 && ClientId < MAX_CLIENTS, "Invalid ClientId: %d", ClientId);
 	dbg_assert(m_aClients[ClientId].m_State != CServer::CClient::STATE_EMPTY, "Client slot %d is empty", ClientId);
+	if(m_aClients[ClientId].m_Quic)
+	{
+		return m_aClients[ClientId].m_aQuicAddrString;
+	}
 	if(m_aClients[ClientId].m_DebugDummy)
 	{
 		return IncludePort ? m_aClients[ClientId].m_aDebugDummyAddrString : m_aClients[ClientId].m_aDebugDummyAddrStringNoPort;
@@ -782,6 +792,13 @@ int CServer::ClientCountry(int ClientId) const
 		return m_aClients[ClientId].m_Country;
 	else
 		return -1;
+}
+
+int64_t CServer::ClientAccountId(int ClientId) const
+{
+	if(ClientId < 0 || ClientId >= MAX_CLIENTS || m_aClients[ClientId].m_State == CServer::CClient::STATE_EMPTY)
+		return -1;
+	return m_aClients[ClientId].m_AccountId;
 }
 
 bool CServer::ClientSlotEmpty(int ClientId) const
@@ -949,7 +966,7 @@ int CServer::SendMsg(CMsgPacker *pMsg, int Flags, int ClientId)
 					{
 						continue;
 					}
-					m_NetServer.Send(&Packet);
+					SendPacket(&Packet);
 				}
 			}
 		}
@@ -981,7 +998,7 @@ int CServer::SendMsg(CMsgPacker *pMsg, int Flags, int ClientId)
 		}
 
 		if(!(Flags & MSGFLAG_NOSEND))
-			m_NetServer.Send(&Packet);
+			SendPacket(&Packet);
 	}
 
 	return 0;
@@ -1003,7 +1020,21 @@ void CServer::SendMsgRaw(int ClientId, const void *pData, int Size, int Flags)
 	{
 		Packet.m_Flags |= NETSENDFLAG_FLUSH;
 	}
-	m_NetServer.Send(&Packet);
+	SendPacket(&Packet);
+}
+
+void CServer::SendPacket(CNetChunk *pPacket)
+{
+	const int ClientId = pPacket->m_ClientId;
+	if(ClientId >= 0 && ClientId < MAX_CLIENTS && m_aClients[ClientId].m_Quic)
+	{
+		// CQuicServer is indexed by its own slot id; translate and restore.
+		pPacket->m_ClientId = m_aClients[ClientId].m_QuicId;
+		m_QuicServer.Send(pPacket);
+		pPacket->m_ClientId = ClientId;
+		return;
+	}
+	m_NetServer.Send(pPacket);
 }
 
 void CServer::DoSnapshot()
@@ -2684,6 +2715,19 @@ void CServer::UpdateRegisterServerInfo()
 	JsonWriter.WriteAttribute("name");
 	JsonWriter.WriteStrValue(g_Config.m_SvName);
 
+	// Advertise the QUIC secure transport so clients can connect over it and
+	// pin the server's public-key fingerprint (no CA needed).
+	if(m_QuicServer.IsActive())
+	{
+		JsonWriter.WriteAttribute("quic");
+		JsonWriter.BeginObject();
+		JsonWriter.WriteAttribute("port");
+		JsonWriter.WriteIntValue(Config()->m_SvQuicPort);
+		JsonWriter.WriteAttribute("cert_sha256");
+		JsonWriter.WriteStrValue(m_aQuicFingerprint);
+		JsonWriter.EndObject();
+	}
+
 	JsonWriter.WriteAttribute("map");
 	JsonWriter.BeginObject();
 	JsonWriter.WriteAttribute("name");
@@ -2809,12 +2853,156 @@ void CServer::UpdateServerInfo(bool Resend)
 	m_ServerInfoNeedsUpdate = false;
 }
 
+void CServer::InitQuic()
+{
+	if(!Config()->m_SvQuic)
+		return;
+
+	char aCertPath[IO_MAX_PATH_LENGTH];
+	char aKeyPath[IO_MAX_PATH_LENGTH];
+	char aDbPath[IO_MAX_PATH_LENGTH];
+	Storage()->GetCompletePath(IStorage::TYPE_SAVE_OR_ABSOLUTE, "accounts_server.cert", aCertPath, sizeof(aCertPath));
+	Storage()->GetCompletePath(IStorage::TYPE_SAVE_OR_ABSOLUTE, "accounts_server.key", aKeyPath, sizeof(aKeyPath));
+	Storage()->GetCompletePath(IStorage::TYPE_SAVE_OR_ABSOLUTE, "accounts.sqlite", aDbPath, sizeof(aDbPath));
+
+	QuicCert Identity = quic_load_or_generate_identity(rust::Str(aCertPath), rust::Str(aKeyPath));
+	if(!std::string(Identity.error).empty())
+	{
+		log_error("server/quic", "failed to load server identity: %s", std::string(Identity.error).c_str());
+		return;
+	}
+
+	NETADDR BindAddr;
+	mem_zero(&BindAddr, sizeof(BindAddr));
+	BindAddr.type = Config()->m_SvIpv4Only ? NETTYPE_IPV4 : NETTYPE_ALL;
+	BindAddr.port = Config()->m_SvQuicPort;
+	if(!m_QuicServer.Open(BindAddr, Identity.cert_der.data(), (int)Identity.cert_der.size(), Identity.key_der.data(), (int)Identity.key_der.size()))
+	{
+		log_error("server/quic", "couldn't open QUIC transport on port %d: %s", BindAddr.port, m_QuicServer.Error());
+		return;
+	}
+	for(int &Map : m_aQuicToClient)
+		Map = -1;
+	m_QuicServer.SetCallbacks(NewQuicClientCallback, DelQuicClientCallback, this);
+
+	rust::Box<AccountGameServer> AccountDb = account_game_server_open(rust::Str(aDbPath));
+	if(!std::string(AccountDb->error()).empty())
+	{
+		log_error("server/quic", "failed to open account database: %s", std::string(AccountDb->error()).c_str());
+		m_QuicServer.Close();
+		return;
+	}
+	m_pAccountDb.emplace(std::move(AccountDb));
+
+	// Download the account server's CA certs so account-signed client certs can
+	// be verified (otherwise every client resolves as a guest).
+	int64_t CaCount = (*m_pAccountDb)->load_account_ca_certs(rust::Str(Config()->m_SvAccountServer));
+	if(CaCount < 0)
+		log_error("server/quic", "could not download account CA certs from %s; clients will only connect as guests", Config()->m_SvAccountServer);
+	else
+		log_info("server/quic", "trusting %d account CA certificate(s) from %s", (int)CaCount, Config()->m_SvAccountServer);
+
+	// Compact lowercase hex fingerprint, advertised so clients can pin it.
+	m_aQuicFingerprint[0] = '\0';
+	for(size_t i = 0; i < Identity.public_key_fingerprint.size() && i < 32; i++)
+		str_format(m_aQuicFingerprint + i * 2, sizeof(m_aQuicFingerprint) - i * 2, "%02x", Identity.public_key_fingerprint[i]);
+	log_info("server/quic", "QUIC accounts endpoint listening on port %d, identity fingerprint=%s", (int)m_QuicServer.LocalPort(), m_aQuicFingerprint);
+}
+
+void CServer::UpdateQuic()
+{
+	if(!m_QuicServer.IsActive())
+		return;
+	m_QuicServer.Update();
+	// Route QUIC clients' game messages through the normal game protocol.
+	CNetChunk Packet;
+	while(m_QuicServer.Recv(&Packet))
+	{
+		const int QuicId = Packet.m_ClientId;
+		if(QuicId < 0 || QuicId >= MAX_CLIENTS || m_aQuicToClient[QuicId] < 0)
+			continue;
+		Packet.m_ClientId = m_aQuicToClient[QuicId];
+		Packet.m_Address = m_aClients[Packet.m_ClientId].m_QuicAddr;
+		ProcessClientPacket(&Packet);
+	}
+}
+
+int CServer::NewQuicClientCallback(int QuicId, void *pUser, bool Sixup)
+{
+	(void)Sixup;
+	CServer *pThis = (CServer *)pUser;
+	if(QuicId < 0 || QuicId >= MAX_CLIENTS)
+		return 0;
+
+	// Resolve the account from the client's certificate (0 == guest).
+	int64_t AccountId = -1;
+	const std::vector<unsigned char> *pCert = pThis->m_QuicServer.PeerCert(QuicId);
+	if(pCert != nullptr && pThis->m_pAccountDb.has_value())
+	{
+		AccountLogin Login = (*pThis->m_pAccountDb)->login_by_cert(rust::Slice<const uint8_t>(pCert->data(), pCert->size()));
+		if(std::string(Login.error).empty())
+			AccountId = Login.account_id;
+		else
+			log_error("server/quic", "QuicId=%d account login failed: %s", QuicId, std::string(Login.error).c_str());
+	}
+
+	// Allocate a free game-client slot, reserved so the UDP server won't reuse it.
+	int ClientId = -1;
+	for(int i = 0; i < pThis->m_NetServer.MaxClients(); i++)
+	{
+		if(pThis->m_aClients[i].m_State == CClient::STATE_EMPTY && !pThis->m_aClients[i].m_Quic)
+		{
+			ClientId = i;
+			break;
+		}
+	}
+	if(ClientId < 0)
+	{
+		log_info("server/quic", "QuicId=%d rejected: server full", QuicId);
+		pThis->m_QuicServer.Drop(QuicId, "server full");
+		return 0;
+	}
+
+	pThis->m_NetServer.ReserveSlot(ClientId, true);
+	NewClientCallback(ClientId, pThis, false);
+	pThis->m_aClients[ClientId].m_Quic = true;
+	pThis->m_aClients[ClientId].m_QuicId = QuicId;
+	pThis->m_aClients[ClientId].m_AccountId = AccountId > 0 ? AccountId : -1;
+	pThis->m_aClients[ClientId].m_QuicAddr = NETADDR{};
+	str_copy(pThis->m_aClients[ClientId].m_aQuicAddrString.data(), "QUIC", pThis->m_aClients[ClientId].m_aQuicAddrString.size());
+	pThis->m_aQuicToClient[QuicId] = ClientId;
+
+	if(AccountId > 0)
+		log_info("server/quic", "QuicId=%d -> cid=%d logged in as account_id=%lld", QuicId, ClientId, (long long)AccountId);
+	else
+		log_info("server/quic", "QuicId=%d -> cid=%d connected (guest)", QuicId, ClientId);
+	return 0;
+}
+
+int CServer::DelQuicClientCallback(int QuicId, const char *pReason, void *pUser)
+{
+	CServer *pThis = (CServer *)pUser;
+	if(QuicId < 0 || QuicId >= MAX_CLIENTS)
+		return 0;
+	const int ClientId = pThis->m_aQuicToClient[QuicId];
+	if(ClientId < 0)
+		return 0;
+	pThis->m_aQuicToClient[QuicId] = -1;
+	DelClientCallback(ClientId, pReason ? pReason : "QUIC disconnect", pThis);
+	pThis->m_aClients[ClientId].m_Quic = false;
+	pThis->m_aClients[ClientId].m_QuicId = -1;
+	pThis->m_aClients[ClientId].m_AccountId = -1;
+	pThis->m_NetServer.ReserveSlot(ClientId, false);
+	return 0;
+}
+
 void CServer::PumpNetwork(bool PacketWaiting)
 {
 	CNetChunk Packet;
 	SECURITY_TOKEN ResponseToken;
 
 	m_NetServer.Update();
+	UpdateQuic();
 
 	if(PacketWaiting)
 	{
@@ -3077,6 +3265,17 @@ int CServer::Run()
 	if(m_RunServer == UNINITIALIZED)
 		m_RunServer = RUNNING;
 
+	log_info("server", "%s", std::string(ddnet_accounts_version()).c_str());
+	{
+		// Smoke-test the QUIC bridge: generating a self-signed transport
+		// identity exercises the Rust crypto/cert path across cxx.
+		QuicCert Cert = quic_generate_self_signed();
+		if(Cert.error.empty())
+			log_debug("server", "quic: self-signed identity ok, fingerprint=%zu bytes", (size_t)Cert.public_key_fingerprint.size());
+		else
+			log_error("server", "quic: self-signed identity failed: %s", std::string(Cert.error).c_str());
+	}
+
 	m_AuthManager.Init();
 
 	if(Config()->m_Debug)
@@ -3142,6 +3341,8 @@ int CServer::Run()
 
 	if(Port == 0)
 		log_info("server", "using port %d", BindAddr.port);
+
+	InitQuic();
 
 #if defined(CONF_UPNP)
 	m_UPnP.Open(BindAddr);

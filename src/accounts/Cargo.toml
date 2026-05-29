@@ -1,0 +1,64 @@
+[package]
+name = "ddnet-accounts-bridge"
+version = "0.0.1"
+edition = "2021"
+rust-version = "1.63"
+publish = false
+license = "Zlib"
+
+[lib]
+# The static library is linked into the C++ client and server as `rust_accounts`
+# (CMake `RUST_TARGETS` entry `accounts` -> `libddnet_accounts.a`).
+name = "ddnet_accounts"
+crate-type = ["rlib", "staticlib"]
+path = "lib.rs"
+
+[dependencies]
+cxx = "=1.0.71"
+
+# Async runtime that drives the QUIC transport and (later) the account HTTP
+# operations. Owned by this crate; the C++ side polls it once per tick.
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros"] }
+
+# QUIC secure transport. Upstream quinn (the Jupeyy/quinn fork is only a
+# `TransportConfig` ack-delay tweak, replicated here in code).
+quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls", "ring"] }
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
+rcgen = "0.13"
+
+# Certificate / key handling (matches the ddnet-account-* libraries).
+ed25519-dalek = { version = "2", features = ["pkcs8", "pem"] }
+spki = { version = "0.7", features = ["fingerprint"] }
+sha2 = "0.10"
+
+anyhow = "1"
+thiserror = "2"
+log = "0.4"
+rand = { version = "0.8", features = ["getrandom"], default-features = false }
+
+# Account game-server operations: resolve a client certificate to an account
+# id and auto-login it into the game server's own database. Use the published
+# crates (registry deps get `--cap-lints=allow`, so their `#![deny(warnings)]`
+# does not break our build on newer Rust toolchains).
+ddnet-account-game-server = { version = "0.3", default-features = false, features = ["sqlite"] }
+ddnet-accounts-shared = "0.2"
+ddnet-account-sql = { version = "0.3", default-features = false, features = ["sqlite"] }
+ddnet-accounts-types = "0.1"
+sqlx = { version = "0.8", default-features = false, features = ["sqlite", "runtime-tokio-rustls"] }
+# Account client operations: request login token (email/steam), login, sign a
+# certificate to present to game servers, download the account-server CA certs.
+ddnet-account-client = "0.2"
+ddnet-account-client-http-fs = "0.3"
+ddnet-account-client-reqwest = "0.3"
+email_address = "0.2"
+url = "2"
+# Account-server CA key handling (P-256) for certificate verification.
+p256 = { version = "0.13", features = ["ecdsa", "pkcs8", "pem"] }
+x509-cert = { version = "0.2", features = ["builder"] }
+
+[dev-dependencies]
+# Crypto features required to *build* account-signed certificates in tests
+# (mirrors the account server's signing dependencies).
+ecdsa = { version = "0.16", features = ["digest", "pem", "pkcs8"] }
+sha2 = { version = "0.10", features = ["oid"] }
+der = { version = "0.7", features = ["derive"] }

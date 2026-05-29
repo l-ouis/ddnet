@@ -232,7 +232,7 @@ int CNetServer::TryAcceptClient(NETADDR &Addr, SECURITY_TOKEN SecurityToken, boo
 	int Slot = -1;
 	for(int i = 0; i < MaxClients(); i++)
 	{
-		if(m_aSlots[i].m_Connection.State() == CNetConnection::EState::OFFLINE)
+		if(!m_aReserved[i] && m_aSlots[i].m_Connection.State() == CNetConnection::EState::OFFLINE)
 		{
 			Slot = i;
 			break;

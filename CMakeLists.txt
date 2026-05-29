@@ -864,6 +864,13 @@ endif()
 # RUST
 ########################################################################
 
+set_glob(RUST_ACCOUNTS GLOB_RECURSE "rs;toml" src/accounts
+  # tidy-alphabetical-start
+  Cargo.toml
+  lib.rs
+  # tidy-alphabetical-end
+)
+
 set_glob(RUST_BASE GLOB_RECURSE "rs;toml" src/base
   # tidy-alphabetical-start
   Cargo.toml
@@ -899,6 +906,8 @@ set_glob(RUST_ENGINE_SHARED GLOB_RECURSE "rs;toml" src/engine/shared
 set_src(RUST_BRIDGE_SHARED GLOB_RECURSE src/rust-bridge
   # tidy-alphabetical-start
   base/cxx.h
+  cpp/accounts.cpp
+  cpp/accounts.h
   cpp/console.cpp
   cpp/console.h
   cpp/snapshot.cpp
@@ -994,13 +1003,14 @@ if(CMAKE_OSX_ARCHITECTURES)
 endif()
 
 set(RUST_SRC
+      ${RUST_ACCOUNTS}
       ${RUST_BASE}
       ${RUST_ENGINE_INTERFACE}
       ${RUST_ENGINE_SHARED}
       Cargo.toml
       Cargo.lock
 )
-set(RUST_TARGETS engine_shared)
+set(RUST_TARGETS accounts engine_shared)
 if(NOT CMAKE_OSX_ARCHITECTURES)
   set(RUST_OUTPUTS)
   foreach(rust_target ${RUST_TARGETS})
@@ -2238,6 +2248,8 @@ set_src(ENGINE_SHARED GLOB_RECURSE src/engine/shared
   network_conn.cpp
   network_console.cpp
   network_console_conn.cpp
+  network_quic.cpp
+  network_quic.h
   network_server.cpp
   network_stun.cpp
   packer.cpp
@@ -2354,6 +2366,7 @@ set(LIBS
   ${ZLIB_LIBRARIES}
   # tidy-alphabetical-end
   # Add Rust part of our code.
+  rust_accounts
   rust_engine_shared
   ${PLATFORM_LIBS}
   # Add pthreads (on non-Windows) at the end, so that other libraries can depend
@@ -3246,6 +3259,7 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
     os_test.cpp
     packer_test.cpp
     prng_test.cpp
+    quic_test.cpp
     score_test.cpp
     secure_random_test.cpp
     server_test.cpp
@@ -3332,6 +3346,7 @@ list(APPEND TARGETS_OWN rust_test)
 list(APPEND TARGETS_LINK rust_test)
 
 set(RUST_TEST_LIBS ${LIBS} $<TARGET_FILE:rust_test>)
+list(REMOVE_ITEM RUST_TEST_LIBS "rust_accounts")
 list(REMOVE_ITEM RUST_TEST_LIBS "rust_engine_shared")
 list(REMOVE_ITEM RUST_TEST_LIBS "-pthread")
 add_custom_target(run_rust_tests

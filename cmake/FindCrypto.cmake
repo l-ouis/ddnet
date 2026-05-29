@@ -3,7 +3,9 @@ if(NOT PREFER_BUNDLED_LIBS)
   if(OPENSSL_FOUND)
     set(CRYPTO_FOUND ON)
     set(CRYPTO_BUNDLED OFF)
-    set(CRYPTO_LIBRARY ${OPENSSL_CRYPTO_LIBRARY})
+    # Include libssl as well: the Rust account client (reqwest/native-tls) needs
+    # it, and it links cleanly alongside the libcrypto already used here.
+    set(CRYPTO_LIBRARY ${OPENSSL_CRYPTO_LIBRARY} ${OPENSSL_SSL_LIBRARY})
     set(CRYPTO_INCLUDEDIR ${OPENSSL_INCLUDE_DIR})
   endif()
 endif()
