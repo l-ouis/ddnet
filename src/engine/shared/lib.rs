@@ -18,4 +18,5 @@ mod config;
 mod rust_version;
 
 pub use config::*;
+pub use ddnet_accounts_bridge as accounts;
 pub use rust_version::*;

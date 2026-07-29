@@ -76,6 +76,7 @@ bool CServerInfo2::FromJsonRaw(CServerInfo2 *pOut, const json_value *pJson)
 	const json_value &Version = ServerInfo["version"];
 	const json_value &Clients = ServerInfo["clients"];
 	const json_value &RequiresLogin = ServerInfo["requires_login"];
+	const json_value &Quic = ServerInfo["quic"];
 
 	Error = false;
 	Error = Error || MaxClients.type != json_integer;
@@ -106,6 +107,27 @@ bool CServerInfo2::FromJsonRaw(CServerInfo2 *pOut, const json_value *pJson)
 	if(RequiresLogin.type == json_boolean)
 	{
 		pOut->m_RequiresLogin = RequiresLogin;
+	}
+	pOut->m_QuicPort = 0;
+	if(Quic.type == json_object)
+	{
+		const json_value &QuicPort = Quic["port"];
+		const json_value &QuicPubKey = Quic["pubkey_sha256"];
+		if(QuicPort.type == json_integer && QuicPubKey.type == json_string &&
+			json_int_get(&QuicPort) > 0 && json_int_get(&QuicPort) < 65536 &&
+			str_length(QuicPubKey) == 64)
+		{
+			bool HashError = false;
+			for(int i = 0; i < 64; i++)
+			{
+				HashError = HashError || !IsAllowedHex(((const char *)QuicPubKey)[i]);
+			}
+			if(!HashError)
+			{
+				pOut->m_QuicPort = json_int_get(&QuicPort);
+				str_copy(pOut->m_aQuicPubKeySha256, QuicPubKey);
+			}
+		}
 	}
 	pOut->m_Passworded = Passworded;
 	str_copy(pOut->m_aGameType, GameType);
@@ -251,6 +273,8 @@ bool CServerInfo2::operator==(const CServerInfo2 &Other) const
 	Unequal = Unequal || str_comp(m_aMapName, Other.m_aMapName) != 0;
 	Unequal = Unequal || str_comp(m_aVersion, Other.m_aVersion) != 0;
 	Unequal = Unequal || m_RequiresLogin != Other.m_RequiresLogin;
+	Unequal = Unequal || m_QuicPort != Other.m_QuicPort;
+	Unequal = Unequal || str_comp(m_aQuicPubKeySha256, Other.m_aQuicPubKeySha256) != 0;
 	if(Unequal)
 	{
 		return false;
@@ -281,6 +305,8 @@ CServerInfo2::operator CServerInfo() const
 	Result.m_NumPlayers = m_NumPlayers;
 	Result.m_ClientScoreKind = m_ClientScoreKind;
 	Result.m_RequiresLogin = m_RequiresLogin;
+	Result.m_QuicPort = m_QuicPort;
+	str_copy(Result.m_aQuicPubKeySha256, m_aQuicPubKeySha256);
 	Result.m_Flags = m_Passworded ? SERVER_FLAG_PASSWORD : 0;
 	str_copy(Result.m_aGameType, m_aGameType);
 	str_copy(Result.m_aName, m_aName);

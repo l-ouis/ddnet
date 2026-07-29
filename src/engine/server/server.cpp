@@ -48,6 +48,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cinttypes>
 #include <vector>
 
 using namespace std::chrono_literals;
@@ -123,7 +124,7 @@ int CServerBan::BanExt(T *pBanPool, const typename T::CDataType *pData, int Seco
 			CNetHash NetHash(&Data);
 			char aBuf[256];
 			MakeBanInfo(pBanPool->Find(&Data, &NetHash), aBuf, sizeof(aBuf), MSGTYPE_PLAYER);
-			Server()->m_NetServer.Drop(i, aBuf);
+			Server()->DropNetClient(i, aBuf);
 		}
 	}
 
@@ -518,7 +519,7 @@ void CServer::Kick(int ClientId, const char *pReason)
 		return;
 	}
 
-	m_NetServer.Drop(ClientId, pReason);
+	DropNetClient(ClientId, pReason);
 }
 
 void CServer::Ban(int ClientId, int Seconds, const char *pReason, bool VerbatimReason)
@@ -737,7 +738,20 @@ const NETADDR *CServer::ClientAddr(int ClientId) const
 	{
 		return &m_aClients[ClientId].m_DebugDummyAddr;
 	}
+	if(m_aClients[ClientId].m_Quic)
+	{
+		return &m_aClients[ClientId].m_QuicAddr;
+	}
 	return m_NetServer.ClientAddr(ClientId);
+}
+
+int64_t CServer::ClientAccountId(int ClientId) const
+{
+	if(ClientId < 0 || ClientId >= MAX_CLIENTS || m_aClients[ClientId].m_State == CClient::STATE_EMPTY)
+	{
+		return 0;
+	}
+	return m_aClients[ClientId].m_AccountId;
 }
 
 const std::array<char, NETADDR_MAXSTRSIZE> &CServer::ClientAddrStringImpl(int ClientId, bool IncludePort) const
@@ -747,6 +761,10 @@ const std::array<char, NETADDR_MAXSTRSIZE> &CServer::ClientAddrStringImpl(int Cl
 	if(m_aClients[ClientId].m_DebugDummy)
 	{
 		return IncludePort ? m_aClients[ClientId].m_aDebugDummyAddrString : m_aClients[ClientId].m_aDebugDummyAddrStringNoPort;
+	}
+	if(m_aClients[ClientId].m_Quic)
+	{
+		return IncludePort ? m_aClients[ClientId].m_aQuicAddrString : m_aClients[ClientId].m_aQuicAddrStringNoPort;
 	}
 	return m_NetServer.ClientAddrString(ClientId, IncludePort);
 }
@@ -946,7 +964,7 @@ int CServer::SendMsg(CMsgPacker *pMsg, int Flags, int ClientId)
 					{
 						continue;
 					}
-					m_NetServer.Send(&Packet);
+					SendPacket(&Packet);
 				}
 			}
 		}
@@ -978,7 +996,7 @@ int CServer::SendMsg(CMsgPacker *pMsg, int Flags, int ClientId)
 		}
 
 		if(!(Flags & MSGFLAG_NOSEND))
-			m_NetServer.Send(&Packet);
+			SendPacket(&Packet);
 	}
 
 	return 0;
@@ -1000,7 +1018,7 @@ void CServer::SendMsgRaw(int ClientId, const void *pData, int Size, int Flags)
 	{
 		Packet.m_Flags |= NETSENDFLAG_FLUSH;
 	}
-	m_NetServer.Send(&Packet);
+	SendPacket(&Packet);
 }
 
 void CServer::DoSnapshot()
@@ -1332,6 +1350,239 @@ int CServer::DelClientCallback(int ClientId, const char *pReason, void *pUser)
 	pThis->SendConnLoggingCommand(CLOSE_SESSION, &Addr);
 #endif
 	return 0;
+}
+
+void CServer::SendPacket(CNetChunk *pPacket)
+{
+	const int ClientId = pPacket->m_ClientId;
+	if(ClientId >= 0 && m_aClients[ClientId].m_Quic)
+	{
+		m_QuicNetServer.Send(m_aClients[ClientId].m_QuicPeerId, pPacket->m_pData, pPacket->m_DataSize, (pPacket->m_Flags & NETSENDFLAG_VITAL) == 0);
+	}
+	else
+	{
+		m_NetServer.Send(pPacket);
+	}
+}
+
+void CServer::DropNetClient(int ClientId, const char *pReason)
+{
+	if(m_aClients[ClientId].m_Quic)
+	{
+		m_QuicNetServer.ClosePeer(m_aClients[ClientId].m_QuicPeerId, pReason);
+		QuicDeleteClient(ClientId, pReason);
+	}
+	else
+	{
+		m_NetServer.Drop(ClientId, pReason);
+	}
+}
+
+void CServer::InitQuic()
+{
+	if(!Config()->m_SvQuic)
+		return;
+
+	char aKeyPath[IO_MAX_PATH_LENGTH];
+	Storage()->GetCompletePath(IStorage::TYPE_SAVE, "quic_identity.pem", aKeyPath, sizeof(aKeyPath));
+	const accounts::SServerIdentity Identity = accounts::LoadOrGenerateServerIdentity(aKeyPath);
+	if(!Identity.m_Error.empty())
+	{
+		log_error("server/quic", "failed to load QUIC identity: %s", std::string(Identity.m_Error).c_str());
+		return;
+	}
+	for(size_t i = 0; i < Identity.m_aPublicKeyHash.size() && i < 32; i++)
+	{
+		str_format(m_aQuicPubKeyHashHex + i * 2, sizeof(m_aQuicPubKeyHashHex) - i * 2, "%02x", Identity.m_aPublicKeyHash[i]);
+	}
+
+	char aBindAddr[NETADDR_MAXSTRSIZE + 16];
+	if(Config()->m_Bindaddr[0] != '\0')
+	{
+		str_format(aBindAddr, sizeof(aBindAddr), "%s:%d", Config()->m_Bindaddr, Config()->m_SvQuicPort);
+	}
+	else if(Config()->m_SvIpv4Only)
+	{
+		str_format(aBindAddr, sizeof(aBindAddr), "0.0.0.0:%d", Config()->m_SvQuicPort);
+	}
+	else
+	{
+		str_format(aBindAddr, sizeof(aBindAddr), "[::]:%d", Config()->m_SvQuicPort);
+	}
+	if(!m_QuicNetServer.Open(aBindAddr, Identity, QUIC_IDLE_TIMEOUT_MS, Config()->m_SvMaxClients))
+	{
+		log_error("server/quic", "couldn't open QUIC endpoint on %s: %s", aBindAddr, m_QuicNetServer.ErrorString());
+		return;
+	}
+	log_info("server/quic", "quic endpoint opened on port %d, cert pubkey sha256 %s", m_QuicNetServer.Port(), m_aQuicPubKeyHashHex);
+
+	if(Config()->m_SvAccountServer[0] != '\0')
+	{
+		char aDbPath[IO_MAX_PATH_LENGTH];
+		Storage()->GetCompletePath(IStorage::TYPE_SAVE, "accounts.sqlite", aDbPath, sizeof(aDbPath));
+		Storage()->CreateFolder("account_certs", IStorage::TYPE_SAVE);
+		char aCertsPath[IO_MAX_PATH_LENGTH];
+		Storage()->GetCompletePath(IStorage::TYPE_SAVE, "account_certs", aCertsPath, sizeof(aCertsPath));
+		m_pAccounts.emplace(accounts::CreateAccountsGameServer(aDbPath, aCertsPath, Config()->m_SvAccountServer));
+		const std::string Error = std::string((*m_pAccounts)->Error());
+		if(!Error.empty())
+		{
+			log_error("server/accounts", "accounts disabled: %s", Error.c_str());
+			m_pAccounts.reset();
+		}
+		else
+		{
+			log_info("server/accounts", "resolving accounts via '%s'", Config()->m_SvAccountServer);
+		}
+	}
+}
+
+void CServer::QuicNewClient(const CQuicEvent &Event)
+{
+	char aError[256];
+	if(m_ServerBan.IsBanned(&Event.m_Addr, aError, sizeof(aError)))
+	{
+		m_QuicNetServer.ClosePeer(Event.m_PeerId, aError);
+		return;
+	}
+
+	int NumClientsWithAddr = 0;
+	for(int i = 0; i < MAX_CLIENTS; i++)
+	{
+		if(m_aClients[i].m_State != CClient::STATE_EMPTY && !m_aClients[i].m_DebugDummy &&
+			net_addr_comp_noport(&Event.m_Addr, ClientAddr(i)) == 0)
+		{
+			NumClientsWithAddr++;
+		}
+	}
+	if(NumClientsWithAddr + 1 > Config()->m_SvMaxClientsPerIp)
+	{
+		str_format(aError, sizeof(aError), "Only %d players with the same IP are allowed", Config()->m_SvMaxClientsPerIp);
+		m_QuicNetServer.ClosePeer(Event.m_PeerId, aError);
+		return;
+	}
+
+	int ClientId = -1;
+	for(int i = 0; i < MaxClients(); i++)
+	{
+		if(m_aClients[i].m_State == CClient::STATE_EMPTY)
+		{
+			ClientId = i;
+			break;
+		}
+	}
+	if(ClientId == -1)
+	{
+		m_QuicNetServer.ClosePeer(Event.m_PeerId, "This server is full");
+		return;
+	}
+
+	m_aClients[ClientId].m_Quic = true;
+	m_aClients[ClientId].m_QuicPeerId = Event.m_PeerId;
+	m_aClients[ClientId].m_QuicAddr = Event.m_Addr;
+	net_addr_str(&Event.m_Addr, m_aClients[ClientId].m_aQuicAddrString.data(), NETADDR_MAXSTRSIZE, true);
+	net_addr_str(&Event.m_Addr, m_aClients[ClientId].m_aQuicAddrStringNoPort.data(), NETADDR_MAXSTRSIZE, false);
+	m_aClients[ClientId].m_AccountId = 0;
+	m_QuicPeerToClientId[Event.m_PeerId] = ClientId;
+	m_NetServer.SetSlotReserved(ClientId, true);
+
+	NewClientCallback(ClientId, this, false);
+
+	if(m_pAccounts.has_value())
+	{
+		const uint64_t RequestId = (*m_pAccounts)->BeginLogin(rust::Slice<const uint8_t>(Event.m_vCertDer.data(), Event.m_vCertDer.size()));
+		m_QuicLoginToClientId[RequestId] = ClientId;
+	}
+
+	log_info("server/quic", "quic client connected. cid=%d addr=<{%s}>", ClientId, ClientAddrString(ClientId, true));
+}
+
+void CServer::QuicDeleteClient(int ClientId, const char *pReason)
+{
+	DelClientCallback(ClientId, pReason, this);
+	m_QuicPeerToClientId.erase(m_aClients[ClientId].m_QuicPeerId);
+	std::erase_if(m_QuicLoginToClientId, [ClientId](const auto &Login) { return Login.second == ClientId; });
+	m_aClients[ClientId].m_Quic = false;
+	m_aClients[ClientId].m_QuicPeerId = 0;
+	m_aClients[ClientId].m_AccountId = 0;
+	m_NetServer.SetSlotReserved(ClientId, false);
+}
+
+void CServer::UpdateQuic()
+{
+	if(!m_QuicNetServer.IsOpen())
+		return;
+
+	CQuicEvent Event;
+	while(m_QuicNetServer.Recv(&Event))
+	{
+		if(Event.m_Type == CQuicEvent::EType::CONNECTED)
+		{
+			QuicNewClient(Event);
+			continue;
+		}
+		const auto It = m_QuicPeerToClientId.find(Event.m_PeerId);
+		if(It == m_QuicPeerToClientId.end())
+			continue;
+		const int ClientId = It->second;
+		if(Event.m_Type == CQuicEvent::EType::CHUNK)
+		{
+			if(m_aClients[ClientId].m_State == CClient::STATE_REDIRECTED)
+				continue;
+			if(Event.m_vData.size() > NET_MAX_PAYLOAD)
+			{
+				DropNetClient(ClientId, "Oversized packet");
+				continue;
+			}
+			CNetChunk Packet;
+			mem_zero(&Packet, sizeof(Packet));
+			Packet.m_ClientId = ClientId;
+			Packet.m_Address = *ClientAddr(ClientId);
+			Packet.m_Flags = Event.m_Unreliable ? 0 : NET_CHUNKFLAG_VITAL;
+			Packet.m_pData = Event.m_vData.data();
+			Packet.m_DataSize = Event.m_vData.size();
+			int GameFlags = 0;
+			if((Packet.m_Flags & NET_CHUNKFLAG_VITAL) != 0)
+			{
+				GameFlags |= MSGFLAG_VITAL;
+			}
+			if(Antibot()->OnEngineClientMessage(ClientId, Packet.m_pData, Packet.m_DataSize, GameFlags))
+			{
+				continue;
+			}
+			ProcessClientPacket(&Packet);
+		}
+		else if(Event.m_Type == CQuicEvent::EType::DISCONNECTED)
+		{
+			QuicDeleteClient(ClientId, Event.m_aReason[0] != '\0' ? Event.m_aReason : "Disconnected");
+		}
+	}
+
+	if(m_pAccounts.has_value())
+	{
+		while(true)
+		{
+			const accounts::SGameServerLogin Login = (*m_pAccounts)->PollLogin();
+			if(!Login.m_Valid)
+				break;
+			const auto It = m_QuicLoginToClientId.find(Login.m_RequestId);
+			if(It == m_QuicLoginToClientId.end())
+				continue;
+			const int ClientId = It->second;
+			m_QuicLoginToClientId.erase(It);
+			if(!m_aClients[ClientId].m_Quic || m_aClients[ClientId].m_State == CClient::STATE_EMPTY)
+				continue;
+			if(!Login.m_Error.empty())
+			{
+				log_error("server/accounts", "account resolution failed. cid=%d error='%s'", ClientId, std::string(Login.m_Error).c_str());
+			}
+			if(Login.m_AccountId != 0)
+			{
+				m_aClients[ClientId].m_AccountId = Login.m_AccountId;
+				log_info("server/accounts", "cid=%d logged in as account %" PRId64, ClientId, Login.m_AccountId);
+			}
+		}
+	}
 }
 
 void CServer::SendRconType(int ClientId, bool UsernameReq)
@@ -1998,7 +2249,7 @@ void CServer::OnNetMsgInfo(int ClientId, const char *pVersion, const char *pPass
 		// wrong version
 		char aReason[256];
 		str_format(aReason, sizeof(aReason), "Wrong version. Server is running '%s' and client '%s'", GameServer()->NetVersion(), pVersion);
-		m_NetServer.Drop(ClientId, aReason);
+		DropNetClient(ClientId, aReason);
 		return;
 	}
 
@@ -2009,7 +2260,7 @@ void CServer::OnNetMsgInfo(int ClientId, const char *pVersion, const char *pPass
 	if(Config()->m_Password[0] != 0 && str_comp(Config()->m_Password, pPassword) != 0)
 	{
 		// wrong password
-		m_NetServer.Drop(ClientId, "Wrong password");
+		DropNetClient(ClientId, "Wrong password");
 		return;
 	}
 
@@ -2025,7 +2276,7 @@ void CServer::OnNetMsgInfo(int ClientId, const char *pVersion, const char *pPass
 	// reserved slot
 	if(NumConnectedClients > MaxClients() - Config()->m_SvReservedSlots && !CheckReservedSlotAuth(ClientId, pPassword))
 	{
-		m_NetServer.Drop(ClientId, "This server is full");
+		DropNetClient(ClientId, "This server is full");
 		return;
 	}
 
@@ -2201,7 +2452,7 @@ void CServer::OnNetMsgRconAuth(int ClientId, const char *pName, const char *pPw,
 		if(m_aClients[ClientId].m_AuthTries >= Config()->m_SvRconMaxTries)
 		{
 			if(!Config()->m_SvRconBantime)
-				m_NetServer.Drop(ClientId, "Too many remote console authentication tries");
+				DropNetClient(ClientId, "Too many remote console authentication tries");
 			else
 				m_ServerBan.BanAddr(ClientAddr(ClientId), Config()->m_SvRconBantime * 60, "Too many remote console authentication tries", false);
 		}
@@ -2742,6 +2993,17 @@ void CServer::UpdateRegisterServerInfo()
 	JsonWriter.WriteAttribute("version");
 	JsonWriter.WriteStrValue(GameServer()->Version());
 
+	if(m_QuicNetServer.IsOpen())
+	{
+		JsonWriter.WriteAttribute("quic");
+		JsonWriter.BeginObject();
+		JsonWriter.WriteAttribute("port");
+		JsonWriter.WriteIntValue(m_QuicNetServer.Port());
+		JsonWriter.WriteAttribute("pubkey_sha256");
+		JsonWriter.WriteStrValue(m_aQuicPubKeyHashHex);
+		JsonWriter.EndObject();
+	}
+
 	JsonWriter.WriteAttribute("client_score_kind");
 	JsonWriter.WriteStrValue("time"); // "points" or "time"
 
@@ -2857,6 +3119,7 @@ void CServer::PumpNetwork(bool PacketWaiting)
 	SECURITY_TOKEN ResponseToken;
 
 	m_NetServer.Update();
+	UpdateQuic();
 
 	// Coalesce the flushes triggered while handling this burst of incoming
 	// packets (preinput broadcasts, timing/ping replies, ...) into one packet
@@ -3209,6 +3472,8 @@ int CServer::Run()
 
 	m_NetServer.SetCallbacks(NewClientCallback, NewClientNoAuthCallback, ClientRejoinCallback, DelClientCallback, this);
 
+	InitQuic();
+
 	m_Econ.Init(Config(), Console(), &m_ServerBan);
 
 	m_Fifo.Init(Console(), Config()->m_SvInputFifo, CFGFLAG_SERVER);
@@ -3466,7 +3731,7 @@ int CServer::Run()
 					{
 						if(time_get() > m_aClients[i].m_RedirectDropTime)
 						{
-							m_NetServer.Drop(i, "redirected");
+							DropNetClient(i, "redirected");
 						}
 					}
 				}
@@ -3541,7 +3806,7 @@ int CServer::Run()
 	for(int i = 0; i < MAX_CLIENTS; ++i)
 	{
 		if(m_aClients[i].m_State != CClient::STATE_EMPTY)
-			m_NetServer.Drop(i, pDisconnectReason);
+			DropNetClient(i, pDisconnectReason);
 	}
 
 	m_pRegister->OnShutdown();
@@ -3557,6 +3822,8 @@ int CServer::Run()
 #if defined(CONF_UPNP)
 	m_UPnP.Shutdown();
 #endif
+	m_QuicNetServer.Close();
+	m_pAccounts.reset();
 	m_NetServer.Close();
 
 	return ErrorShutdown();

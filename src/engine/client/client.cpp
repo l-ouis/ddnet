@@ -221,7 +221,14 @@ int CClient::SendMsg(int Conn, CMsgPacker *pMsg, int Flags)
 
 	if(!(Flags & MSGFLAG_NOSEND))
 	{
-		m_aNetClient[Conn].Send(&Packet);
+		if(m_aConnViaQuic[Conn])
+		{
+			m_aQuicNetClient[Conn].Send(Packet.m_pData, Packet.m_DataSize, (Packet.m_Flags & NETSENDFLAG_VITAL) == 0);
+		}
+		else
+		{
+			m_aNetClient[Conn].Send(&Packet);
+		}
 	}
 
 	return 0;
@@ -339,6 +346,10 @@ float CClient::GotMaplistPercentage() const
 
 bool CClient::ConnectionProblems() const
 {
+	if(m_aConnViaQuic[g_Config.m_ClDummy])
+	{
+		return m_aQuicNetClient[g_Config.m_ClDummy].MillisSinceReceive() > 1000 * MaxLatencyTicks() / GameTickSpeed();
+	}
 	return m_aNetClient[g_Config.m_ClDummy].GotProblems(MaxLatencyTicks() * time_freq() / GameTickSpeed());
 }
 
@@ -713,6 +724,11 @@ void CClient::Connect(const char *pAddress, const char *pPassword)
 	{
 		m_aNetClient[CONN_MAIN].Connect7(aConnectAddrs, NumConnectAddrs);
 	}
+	else if(PrepareQuicConnect(aConnectAddrs, NumConnectAddrs))
+	{
+		// The QUIC connection starts once the account certificate is
+		// ready, see QuicConnectWithCert.
+	}
 	else
 	{
 		m_aNetClient[CONN_MAIN].Connect(aConnectAddrs, NumConnectAddrs);
@@ -760,6 +776,9 @@ void CClient::DisconnectWithReason(const char *pReason)
 	m_vMaplistEntries.clear();
 	GameClient()->ForceUpdateConsoleRemoteCompletionSuggestions();
 	m_aNetClient[CONN_MAIN].Disconnect(pReason);
+	m_aQuicNetClient[CONN_MAIN].Disconnect(pReason);
+	m_aConnViaQuic[CONN_MAIN] = false;
+	m_QuicConnectPending = false;
 	SetState(IClient::STATE_OFFLINE);
 	GameClient()->Map()->Unload();
 	m_CurrentServerPingInfoType = -1;
@@ -810,7 +829,7 @@ bool CClient::DummyConnectingDelayed() const
 
 void CClient::DummyConnect()
 {
-	if(m_aNetClient[CONN_MAIN].State() != NETSTATE_ONLINE)
+	if(NetState(CONN_MAIN) != NETSTATE_ONLINE)
 	{
 		log_info("client", "Not online.");
 		return;
@@ -848,7 +867,12 @@ void CClient::DummyConnect()
 
 	m_DummyConnecting = true;
 	// connect to the server
-	if(IsSixup())
+	if(m_aConnViaQuic[CONN_MAIN])
+	{
+		m_aConnViaQuic[CONN_DUMMY] = true;
+		m_aQuicNetClient[CONN_DUMMY].Connect(m_aQuicConnectAddr, m_aQuicServerPubKeyHash, m_Accounts.ConnectCertDer(), m_Accounts.ConnectKeyDer(), QUIC_IDLE_TIMEOUT_MS);
+	}
+	else if(IsSixup())
 		m_aNetClient[CONN_DUMMY].Connect7(m_aNetClient[CONN_MAIN].ServerAddress(), 1);
 	else
 		m_aNetClient[CONN_DUMMY].Connect(m_aNetClient[CONN_MAIN].ServerAddress(), 1);
@@ -860,6 +884,8 @@ void CClient::DummyConnect()
 void CClient::DummyDisconnect(const char *pReason)
 {
 	m_aNetClient[CONN_DUMMY].Disconnect(pReason);
+	m_aQuicNetClient[CONN_DUMMY].Disconnect(pReason);
+	m_aConnViaQuic[CONN_DUMMY] = false;
 	g_Config.m_ClDummy = 0;
 
 	m_aRconAuthed[1] = 0;
@@ -1162,7 +1188,7 @@ const char *CClient::DummyName()
 
 const char *CClient::ErrorString() const
 {
-	return m_aNetClient[CONN_MAIN].ErrorString();
+	return NetErrorString(CONN_MAIN);
 }
 
 void CClient::Render()
@@ -1509,7 +1535,7 @@ void CClient::ProcessServerInfo(int RawType, NETADDR *pFrom, const void *pData, 
 		//
 		// SERVERINFO_EXTENDED_MORE doesn't carry any server
 		// information, so just skip it.
-		if(m_aNetClient[CONN_MAIN].State() == NETSTATE_ONLINE &&
+		if(NetState(CONN_MAIN) == NETSTATE_ONLINE &&
 			ServerAddress() == *pFrom &&
 			RawType != SERVERINFO_EXTENDED_MORE)
 		{
@@ -2616,6 +2642,119 @@ int CClient::ConnectNetTypes() const
 	return NetType;
 }
 
+int CClient::NetState(int Conn)
+{
+	if(Conn == CONN_MAIN && m_QuicConnectPending)
+	{
+		return NETSTATE_CONNECTING;
+	}
+	if(m_aConnViaQuic[Conn])
+	{
+		switch(m_aQuicNetClient[Conn].State())
+		{
+		case CQuicNetClient::EState::CONNECTING:
+			return NETSTATE_CONNECTING;
+		case CQuicNetClient::EState::ONLINE:
+			return NETSTATE_ONLINE;
+		default:
+			return NETSTATE_OFFLINE;
+		}
+	}
+	return m_aNetClient[Conn].State();
+}
+
+const char *CClient::NetErrorString(int Conn) const
+{
+	if(m_aConnViaQuic[Conn])
+	{
+		return m_aQuicNetClient[Conn].ErrorString();
+	}
+	return m_aNetClient[Conn].ErrorString();
+}
+
+bool CClient::PrepareQuicConnect(const NETADDR *pAddrs, int NumAddrs)
+{
+	const int ForcePort = m_QuicForcePort;
+	char aForceHashHex[sizeof(m_aQuicForceHashHex)];
+	str_copy(aForceHashHex, m_aQuicForceHashHex);
+	m_QuicForcePort = 0;
+	m_aQuicForceHashHex[0] = '\0';
+
+	if(!m_Accounts.Enabled() || (!g_Config.m_ClQuic && ForcePort == 0))
+	{
+		if(ForcePort != 0)
+		{
+			log_warn("client/quic", "cannot connect via QUIC, account support is disabled");
+		}
+		return false;
+	}
+	for(int i = 0; i < NumAddrs; i++)
+	{
+		int QuicPort = ForcePort;
+		const char *pHashHex = aForceHashHex;
+		if(QuicPort == 0)
+		{
+			const IServerBrowser::CServerEntry *pEntry = m_ServerBrowser.Find(pAddrs[i]);
+			if(pEntry == nullptr || pEntry->m_Info.m_QuicPort <= 0)
+			{
+				continue;
+			}
+			QuicPort = pEntry->m_Info.m_QuicPort;
+			pHashHex = pEntry->m_Info.m_aQuicPubKeySha256;
+		}
+		if(str_hex_decode(m_aQuicServerPubKeyHash, sizeof(m_aQuicServerPubKeyHash), pHashHex) != 0)
+		{
+			log_warn("client/quic", "server advertised an invalid QUIC certificate hash");
+			continue;
+		}
+		char aIp[NETADDR_MAXSTRSIZE];
+		net_addr_str(&pAddrs[i], aIp, sizeof(aIp), false);
+		if(pAddrs[i].type & NETTYPE_IPV6)
+		{
+			str_format(m_aQuicConnectAddr, sizeof(m_aQuicConnectAddr), "[%s]:%d", aIp, QuicPort);
+		}
+		else
+		{
+			str_format(m_aQuicConnectAddr, sizeof(m_aQuicConnectAddr), "%s:%d", aIp, QuicPort);
+		}
+		m_QuicServerAddr = pAddrs[i];
+		mem_copy(m_aQuicFallbackAddrs, pAddrs, NumAddrs * sizeof(NETADDR));
+		m_NumQuicFallbackAddrs = NumAddrs;
+		m_aConnViaQuic[CONN_MAIN] = true;
+		m_QuicConnectPending = true;
+		m_Accounts.RequestConnectCert();
+		log_info("client/quic", "server supports QUIC, connecting to %s", m_aQuicConnectAddr);
+		return true;
+	}
+	return false;
+}
+
+void CClient::QuicConnectWithCert()
+{
+	m_QuicConnectPending = false;
+	if(m_Accounts.CertWarning()[0] != '\0')
+	{
+		log_warn("client/quic", "%s", m_Accounts.CertWarning());
+	}
+	m_aQuicNetClient[CONN_MAIN].Connect(m_aQuicConnectAddr, m_aQuicServerPubKeyHash, m_Accounts.ConnectCertDer(), m_Accounts.ConnectKeyDer(), QUIC_IDLE_TIMEOUT_MS);
+}
+
+void CClient::QuicFallback(const char *pError)
+{
+	log_warn("client/quic", "QUIC connection failed (%s), falling back to UDP", pError);
+	m_aQuicNetClient[CONN_MAIN].Disconnect("");
+	m_aConnViaQuic[CONN_MAIN] = false;
+	m_QuicConnectPending = false;
+	if(m_NumQuicFallbackAddrs > 0)
+	{
+		m_aNetClient[CONN_MAIN].Connect(m_aQuicFallbackAddrs, m_NumQuicFallbackAddrs);
+	}
+	else
+	{
+		Disconnect();
+	}
+}
+
 void CClient::PumpNetwork()
 {
 	for(auto &NetClient : m_aNetClient)
@@ -2625,34 +2764,48 @@ void CClient::PumpNetwork()
 
 	if(State() != IClient::STATE_DEMOPLAYBACK)
 	{
+		// start the QUIC connection once the account certificate is ready
+		if(m_QuicConnectPending && m_Accounts.ConnectCertReady())
+		{
+			QuicConnectWithCert();
+		}
+
+		// fall back to the legacy transport if the QUIC connection could
+		// not be established
+		if(m_aConnViaQuic[CONN_MAIN] && State() == IClient::STATE_CONNECTING &&
+			m_aQuicNetClient[CONN_MAIN].State() == CQuicNetClient::EState::ERROR)
+		{
+			QuicFallback(m_aQuicNetClient[CONN_MAIN].ErrorString());
+		}
+
 		// check for errors of main and dummy
 		if(State() != IClient::STATE_OFFLINE && State() < IClient::STATE_QUITTING)
 		{
-			if(m_aNetClient[CONN_MAIN].State() == NETSTATE_OFFLINE)
+			if(NetState(CONN_MAIN) == NETSTATE_OFFLINE)
 			{
 				// This will also disconnect the dummy, so the branch below is an `else if`
 				Disconnect();
 				char aBuf[256];
-				str_format(aBuf, sizeof(aBuf), "offline error='%s'", m_aNetClient[CONN_MAIN].ErrorString());
+				str_format(aBuf, sizeof(aBuf), "offline error='%s'", NetErrorString(CONN_MAIN));
 				m_pConsole->Print(IConsole::OUTPUT_LEVEL_STANDARD, "client", aBuf, CLIENT_NETWORK_PRINT_ERROR_COLOR);
 			}
-			else if((DummyConnecting() || DummyConnected()) && m_aNetClient[CONN_DUMMY].State() == NETSTATE_OFFLINE)
+			else if((DummyConnecting() || DummyConnected()) && NetState(CONN_DUMMY) == NETSTATE_OFFLINE)
 			{
 				const bool WasConnecting = DummyConnecting();
 				DummyDisconnect(nullptr);
 				char aBuf[256];
-				str_format(aBuf, sizeof(aBuf), "offline dummy error='%s'", m_aNetClient[CONN_DUMMY].ErrorString());
+				str_format(aBuf, sizeof(aBuf), "offline dummy error='%s'", NetErrorString(CONN_DUMMY));
 				m_pConsole->Print(IConsole::OUTPUT_LEVEL_STANDARD, "client", aBuf, CLIENT_NETWORK_PRINT_ERROR_COLOR);
 				if(WasConnecting)
 				{
-					str_format(aBuf, sizeof(aBuf), "%s: %s", Localize("Could not connect dummy"), m_aNetClient[CONN_DUMMY].ErrorString());
+					str_format(aBuf, sizeof(aBuf), "%s: %s", Localize("Could not connect dummy"), NetErrorString(CONN_DUMMY));
 					GameClient()->Echo(aBuf);
 				}
 			}
 		}
 
 		// check if main was connected
-		if(State() == IClient::STATE_CONNECTING && m_aNetClient[CONN_MAIN].State() == NETSTATE_ONLINE)
+		if(State() == IClient::STATE_CONNECTING && NetState(CONN_MAIN) == NETSTATE_ONLINE)
 		{
 			// we switched to online
 			m_pConsole->Print(IConsole::OUTPUT_LEVEL_STANDARD, "client", "connected, sending info", CLIENT_NETWORK_PRINT_COLOR);
@@ -2662,7 +2815,7 @@ void CClient::PumpNetwork()
 		}
 
 		// progress on dummy connect when the connection is online
-		if(m_DummySendConnInfo && m_aNetClient[CONN_DUMMY].State() == NETSTATE_ONLINE)
+		if(m_DummySendConnInfo && NetState(CONN_DUMMY) == NETSTATE_ONLINE)
 		{
 			m_DummySendConnInfo = false;
 			SendInfo(CONN_DUMMY);
@@ -2670,6 +2823,30 @@ void CClient::PumpNetwork()
 			SendReady(CONN_DUMMY);
 			GameClient()->SendDummyInfo(true);
 			SendEnterGame(CONN_DUMMY);
+		}
+	}
+
+	// process QUIC chunks
+	for(int Conn = 0; Conn < NUM_CONNS; Conn++)
+	{
+		if(!m_aConnViaQuic[Conn])
+			continue;
+		CQuicEvent Event;
+		while(m_aQuicNetClient[Conn].Recv(&Event))
+		{
+			if(Event.m_Type != CQuicEvent::EType::CHUNK)
+				continue;
+			CNetChunk Chunk;
+			mem_zero(&Chunk, sizeof(Chunk));
+			Chunk.m_ClientId = 0;
+			Chunk.m_Address = ServerAddress();
+			Chunk.m_Flags = Event.m_Unreliable ? 0 : NET_CHUNKFLAG_VITAL;
+			Chunk.m_pData = Event.m_vData.data();
+			Chunk.m_DataSize = Event.m_vData.size();
+			if(Conn == CONN_MAIN || Conn == CONN_DUMMY)
+			{
+				ProcessServerPacket(&Chunk, Conn, g_Config.m_ClDummy ^ Conn);
+			}
 		}
 	}
 
@@ -2768,6 +2945,14 @@ void CClient::UpdateDemoIntraTimers()
 
 void CClient::Update()
 {
+	m_Accounts.Update();
+	if(m_aConnViaQuic[CONN_MAIN])
+	{
+		// keep the account certificate fresh while playing, so the next
+		// connect does not have to wait for the account server
+		m_Accounts.TryRefreshCert();
+	}
+
 	PumpNetwork();
 
 	if(State() == IClient::STATE_DEMOPLAYBACK)
@@ -3127,6 +3312,9 @@ void CClient::Run()
 	m_aSnapshotParts[0] = 0;
 	m_aSnapshotParts[1] = 0;
 
+	// after the config is loaded, so that cl_account_server applies
+	m_Accounts.Init(m_pStorage);
+
 	if(m_GenerateTimeoutSeed)
 	{
 		GenerateTimeoutSeed();
@@ -3446,6 +3634,12 @@ void CClient::Run()
 			auto NowInner = Now;
 			while(std::chrono::duration_cast<std::chrono::microseconds>(SleepTimeInNanoSecondsInner) > 0us)
 			{
+				// The QUIC transport does not use this socket, so only
+				// wait shortly to process its traffic without much delay.
+				if(m_aConnViaQuic[CONN_MAIN])
+				{
+					SleepTimeInNanoSecondsInner = std::min(SleepTimeInNanoSecondsInner, decltype(SleepTimeInNanoSecondsInner)(1000000ns));
+				}
 				net_socket_read_wait(m_aNetClient[CONN_MAIN].m_Socket, SleepTimeInNanoSecondsInner);
 				auto NowInnerCalc = time_get_nanoseconds();
 				SleepTimeInNanoSecondsInner -= (NowInnerCalc - NowInner);
@@ -3497,6 +3691,8 @@ void CClient::Run()
 	delete m_pEditor;
 
 	// close sockets
+	for(auto &QuicNetClient : m_aQuicNetClient)
+		QuicNetClient.Disconnect("");
 	for(unsigned int i = 0; i < std::size(m_aNetClient); i++)
 		m_aNetClient[i].Close();
 
@@ -3594,6 +3790,14 @@ void CClient::Con_Connect(IConsole::IResult *pResult, void *pUserData)
 {
 	CClient *pSelf = (CClient *)pUserData;
 	pSelf->HandleConnectLink(pResult->GetString(0));
+}
+
+void CClient::Con_ConnectQuic(IConsole::IResult *pResult, void *pUserData)
+{
+	CClient *pSelf = (CClient *)pUserData;
+	pSelf->m_QuicForcePort = pResult->GetInteger(1);
+	str_copy(pSelf->m_aQuicForceHashHex, pResult->GetString(2));
+	pSelf->Connect(pResult->GetString(0));
 }
 
 void CClient::Con_Disconnect(IConsole::IResult *pResult, void *pUserData)
@@ -4571,6 +4775,7 @@ void CClient::RegisterCommands()
 	m_pConsole->Register("restart", "", CFGFLAG_CLIENT | CFGFLAG_STORE, Con_Restart, this, "Restart the client");
 	m_pConsole->Register("minimize", "", CFGFLAG_CLIENT | CFGFLAG_STORE, Con_Minimize, this, "Minimize the client");
 	m_pConsole->Register("connect", "r[host|ip]", CFGFLAG_CLIENT, Con_Connect, this, "Connect to the specified host/ip");
+	m_pConsole->Register("connect_quic", "s[host|ip] i[quic-port] s[cert-sha256-hex]", CFGFLAG_CLIENT, Con_ConnectQuic, this, "Connect to the specified host/ip over QUIC, verifying the server certificate against the given sha256 public key hash");
 	m_pConsole->Register("disconnect", "", CFGFLAG_CLIENT, Con_Disconnect, this, "Disconnect from the server");
 	m_pConsole->Register("ping", "", CFGFLAG_CLIENT, Con_Ping, this, "Ping the current server");
 	m_pConsole->Register("screenshot", "", CFGFLAG_CLIENT | CFGFLAG_STORE, Con_Screenshot, this, "Take a screenshot");

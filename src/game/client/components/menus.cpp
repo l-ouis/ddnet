@@ -1068,6 +1068,10 @@ void CMenus::Render()
 			{
 				RenderSettings(MainView);
 			}
+			else if(m_MenuPage == PAGE_ACCOUNT)
+			{
+				RenderAccount(MainView);
+			}
 			else
 			{
 				dbg_assert_failed("Invalid m_MenuPage: %d", m_MenuPage);

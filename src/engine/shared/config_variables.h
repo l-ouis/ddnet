@@ -154,6 +154,8 @@ MACRO_CONFIG_INT(ClSkinsLoadedMax, cl_skins_loaded_max, 256, 256, 8192, CFGFLAG_
 #else
 MACRO_CONFIG_INT(ClSkinsLoadedMax, cl_skins_loaded_max, 512, 256, 8192, CFGFLAG_CLIENT | CFGFLAG_SAVE, "Maximum number of skins that can be loaded at the same time")
 #endif
+MACRO_CONFIG_STR(ClAccountServer, cl_account_server, 128, "https://pg.ddnet.org:5555/", CFGFLAG_CLIENT | CFGFLAG_SAVE, "URL of the account server used to manage the account of the player")
+MACRO_CONFIG_INT(ClQuic, cl_quic, 1, 0, 1, CFGFLAG_CLIENT | CFGFLAG_SAVE, "Connect over QUIC when the server supports it, which is required to log in to an account on game servers")
 MACRO_CONFIG_STR(ClSkinDownloadUrl, cl_skin_download_url, 100, "https://skins.ddnet.org/skin/", CFGFLAG_CLIENT | CFGFLAG_SAVE, "URL used to download skins")
 MACRO_CONFIG_STR(ClSkinCommunityDownloadUrl, cl_skin_community_download_url, 100, "https://skins.ddnet.org/skin/community/", CFGFLAG_CLIENT | CFGFLAG_SAVE, "URL used to download community skins")
 MACRO_CONFIG_INT(ClVanillaSkinsOnly, cl_vanilla_skins_only, 0, 0, 1, CFGFLAG_CLIENT | CFGFLAG_SAVE, "Only show skins available in Vanilla Teeworlds")
@@ -458,6 +460,9 @@ MACRO_CONFIG_STR(Bindaddr, bindaddr, 128, "", CFGFLAG_CLIENT | CFGFLAG_SERVER, "
 MACRO_CONFIG_INT(SvIpv4Only, sv_ipv4only, 0, 0, 1, CFGFLAG_SERVER, "Whether to bind only to ipv4, otherwise bind to all available interfaces")
 MACRO_CONFIG_INT(SvPort, sv_port, 0, 0, 65535, CFGFLAG_SERVER, "Port to use for the server (Only ports 8303-8310 work in LAN server browser, 0 to automatically find a free port in 8303-8310). See sv_register_port for the external port if you're behind NAT")
 MACRO_CONFIG_STR(SvHostname, sv_hostname, 128, "", CFGFLAG_SERVER, "Server hostname (0.7 only)")
+MACRO_CONFIG_INT(SvQuic, sv_quic, 0, 0, 1, CFGFLAG_SERVER, "Open a QUIC endpoint for secure connections, which allow clients to log in to their account")
+MACRO_CONFIG_INT(SvQuicPort, sv_quic_port, 0, 0, 65535, CFGFLAG_SERVER, "Port to use for the QUIC endpoint (0 = automatically pick a free port; the port is advertised via the server browser)")
+MACRO_CONFIG_STR(SvAccountServer, sv_account_server, 128, "https://pg.ddnet.org:5555/", CFGFLAG_SERVER, "URL of the account server whose account certificates are accepted, empty to disable accounts")
 MACRO_CONFIG_STR(SvMap, sv_map, 128, "Sunny Side Up", CFGFLAG_SERVER, "Map to use on the server")
 MACRO_CONFIG_INT(SvMaxClients, sv_max_clients, SERVER_MAX_CLIENTS, 1, SERVER_MAX_CLIENTS, CFGFLAG_SERVER, "Maximum number of clients that are allowed on a server")
 MACRO_CONFIG_INT(SvMaxClientsPerIp, sv_max_clients_per_ip, 4, 1, SERVER_MAX_CLIENTS, CFGFLAG_SERVER, "Maximum number of clients with the same IP that can connect to the server")

@@ -101,6 +101,12 @@ void CMenusStart::RenderStartMenu(CUIRect MainView)
 
 	Menu.HSplitBottom(100.0f, &Menu, nullptr);
 	Menu.HSplitBottom(40.0f, &Menu, &Button);
+	static CButtonContainer s_AccountButton;
+	if(GameClient()->m_Menus.DoButton_Menu(&s_AccountButton, Localize("Account"), 0, &Button, BUTTONFLAG_LEFT, nullptr, IGraphics::CORNER_ALL, Rounding, 0.5f, Client()->Accounts()->LoggedIn() ? ColorRGBA(0.0f, 1.0f, 0.0f, 0.25f) : ColorRGBA(0.0f, 0.0f, 0.0f, 0.25f)) || CheckHotKey(KEY_A))
+		NewPage = CMenus::PAGE_ACCOUNT;
+
+	Menu.HSplitBottom(5.0f, &Menu, nullptr); // little space
+	Menu.HSplitBottom(40.0f, &Menu, &Button);
 	static CButtonContainer s_SettingsButton;
 	if(GameClient()->m_Menus.DoButton_Menu(&s_SettingsButton, Localize("Settings"), 0, &Button, BUTTONFLAG_LEFT, g_Config.m_ClShowStartMenuImages ? "settings" : nullptr, IGraphics::CORNER_ALL, Rounding, 0.5f, ColorRGBA(0.0f, 0.0f, 0.0f, 0.25f)) || CheckHotKey(KEY_S))
 		NewPage = CMenus::PAGE_SETTINGS;

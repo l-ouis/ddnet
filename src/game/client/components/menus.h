@@ -8,6 +8,7 @@
 #include <base/types.h>
 #include <base/vmath.h>
 
+#include <engine/accounts.h>
 #include <engine/console.h>
 #include <engine/demo.h>
 #include <engine/friends.h>
@@ -558,6 +559,59 @@ protected:
 
 	// found in menus_settings.cpp
 	void RenderSettings(CUIRect MainView);
+	// menus_account.cpp
+	enum class EAccountState
+	{
+		// profile list, login entry point
+		OVERVIEW,
+		// user enters the email address for the current flow
+		EMAIL_ENTER,
+		// waiting for a requested token email to be confirmed
+		TOKEN_WAIT,
+		// user enters the token they received by email
+		TOKEN_ENTER,
+		// an operation (login, logout, ...) is in flight
+		OP_WAIT,
+		// waiting for the account info
+		INFO_WAIT,
+		// showing account id, creation date and linked credentials
+		INFO,
+	};
+	// The flow determines which operation runs when tokens are collected.
+	enum class EAccountFlow
+	{
+		NONE,
+		LOGIN,
+		LOGOUT_ALL,
+		DELETE,
+		LINK_EMAIL,
+		UNLINK_EMAIL,
+	};
+	EAccountState m_AccountState = EAccountState::OVERVIEW;
+	EAccountFlow m_AccountFlow = EAccountFlow::NONE;
+	// Link credential needs an account token and a credential auth token,
+	// collected in two steps.
+	int m_AccountFlowStep = 0;
+	uint64_t m_AccountRequestId = 0;
+	CLineInputBuffered<128> m_AccountEmailInput;
+	CLineInputBuffered<128> m_AccountLinkEmailInput;
+	CLineInputBuffered<64> m_AccountTokenInput;
+	char m_aAccountToken[64] = "";
+	char m_aAccountWebUrl[256] = "";
+	char m_aAccountInfoProfileKey[64] = "";
+	int64_t m_AccountInfoId = 0;
+	char m_aAccountInfoCreationDate[64] = "";
+	std::vector<CAccountEvent::CCredential> m_vAccountInfoCredentials;
+	void RenderAccount(CUIRect MainView);
+	void RenderAccountOverview(CUIRect MainView);
+	void RenderAccountTokenEnter(CUIRect MainView);
+	void RenderAccountInfo(CUIRect MainView);
+	void ProcessAccountEvents();
+	void AccountFlowTokenReceived(const CAccountEvent &Event);
+	void StartAccountFlow(EAccountFlow Flow, const char *pEmail);
+	void AbortAccountFlow();
+	void AccountOpFailed(const CAccountEvent &Event);
+	void PopupConfirmAccountWebValidation();
 	bool RenderHslaScrollbars(CUIRect *pRect, unsigned int *pColor, bool Alpha, float DarkestLight);
 
 	// found in menus_settings_assets.cpp
@@ -689,6 +743,7 @@ public:
 		PAGE_SETTINGS,
 		PAGE_NETWORK,
 		PAGE_GHOST,
+		PAGE_ACCOUNT,
 
 		PAGE_LENGTH,
 	};

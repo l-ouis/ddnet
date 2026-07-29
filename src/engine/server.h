@@ -68,6 +68,12 @@ public:
 	virtual bool GetClientInfo(int ClientId, CClientInfo *pInfo) const = 0;
 	virtual void SetClientDDNetVersion(int ClientId, int DDNetVersion) = 0;
 	virtual const NETADDR *ClientAddr(int ClientId) const = 0;
+	/**
+	 * Returns the account id of the client with the given client ID,
+	 * 0 if the client is not logged in to an account. The account is
+	 * resolved asynchronously shortly after the client connected.
+	 */
+	virtual int64_t ClientAccountId(int ClientId) const = 0;
 	virtual const std::array<char, NETADDR_MAXSTRSIZE> &ClientAddrStringImpl(int ClientId, bool IncludePort) const = 0;
 	const char *ClientAddrString(int ClientId, bool IncludePort) const { return ClientAddrStringImpl(ClientId, IncludePort).data(); }
 

@@ -44,6 +44,11 @@ public:
 	char m_aMapName[MAX_MAP_LENGTH];
 	char m_aVersion[32];
 	bool m_RequiresLogin;
+	// 0 if the server has no QUIC endpoint
+	int m_QuicPort;
+	// sha256 of the subject public key info of the QUIC server
+	// certificate, as lowercase hex
+	char m_aQuicPubKeySha256[65];
 
 	bool operator==(const CServerInfo2 &Other) const;
 	bool operator!=(const CServerInfo2 &Other) const { return !(*this == Other); }

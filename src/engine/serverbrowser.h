@@ -127,6 +127,11 @@ public:
 	std::vector<CClient> m_vClients;
 	int m_NumFilteredPlayers;
 	bool m_RequiresLogin;
+	// 0 if the server has no QUIC endpoint
+	int m_QuicPort;
+	// sha256 of the subject public key info of the QUIC server
+	// certificate, as lowercase hex
+	char m_aQuicPubKeySha256[65];
 
 	static int EstimateLatency(int Loc1, int Loc2);
 	static bool ParseLocation(int *pResult, const char *pString);

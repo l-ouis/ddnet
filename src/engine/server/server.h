@@ -17,12 +17,14 @@
 #include <engine/shared/fifo.h>
 #include <engine/shared/netban.h>
 #include <engine/shared/network.h>
+#include <engine/shared/network_quic.h>
 #include <engine/shared/protocol.h>
 #include <engine/shared/snapshot.h>
 #include <engine/shared/uuid_manager.h>
 
 #include <memory>
 #include <optional>
+#include <unordered_map>
 #include <vector>
 
 #if defined(CONF_UPNP)
@@ -204,6 +206,15 @@ public:
 
 		bool m_Sixup;
 
+		// QUIC transport, see CServer::UpdateQuic
+		bool m_Quic = false;
+		uint64_t m_QuicPeerId = 0;
+		NETADDR m_QuicAddr = {};
+		std::array<char, NETADDR_MAXSTRSIZE> m_aQuicAddrString = {};
+		std::array<char, NETADDR_MAXSTRSIZE> m_aQuicAddrStringNoPort = {};
+		// 0 while not logged in to an account, resolved asynchronously
+		int64_t m_AccountId = 0;
+
 		bool IncludedInServerInfo() const
 		{
 			return m_State != STATE_EMPTY && !m_DebugDummy;
@@ -220,6 +231,14 @@ public:
 	CSnapshotBuilder m_SnapshotBuilder;
 	CSnapIdPool m_IdPool;
 	CNetServer m_NetServer;
+	CQuicNetServer m_QuicNetServer;
+	std::optional<rust::Box<accounts::CAccountsGameServer>> m_pAccounts;
+	// Mapping from QUIC peer ids to client ids, the opposite mapping is
+	// in CClient::m_QuicPeerId.
+	std::unordered_map<uint64_t, int> m_QuicPeerToClientId;
+	// Pending account resolutions, mapping request ids to client ids.
+	std::unordered_map<uint64_t, int> m_QuicLoginToClientId;
+	char m_aQuicPubKeyHashHex[65] = "";
 	CEcon m_Econ;
 	CFifo m_Fifo;
 	CServerBan m_ServerBan;
@@ -317,6 +336,7 @@ public:
 	bool GetClientInfo(int ClientId, CClientInfo *pInfo) const override;
 	void SetClientDDNetVersion(int ClientId, int DDNetVersion) override;
 	const NETADDR *ClientAddr(int ClientId) const override;
+	int64_t ClientAccountId(int ClientId) const override;
 	const std::array<char, NETADDR_MAXSTRSIZE> &ClientAddrStringImpl(int ClientId, bool IncludePort) const override;
 	const char *ClientName(int ClientId) const override;
 	const char *ClientClan(int ClientId) const override;
@@ -419,6 +439,15 @@ public:
 	void UpdateServerInfo(bool Resend);
 
 	void PumpNetwork(bool PacketWaiting);
+
+	// Sends a packet over the transport the client is connected with.
+	void SendPacket(CNetChunk *pPacket);
+	// Drops the client over the transport it is connected with.
+	void DropNetClient(int ClientId, const char *pReason);
+	void InitQuic();
+	void UpdateQuic();
+	void QuicNewClient(const CQuicEvent &Event);
+	void QuicDeleteClient(int ClientId, const char *pReason);
 
 	void ChangeMap(const char *pMap) override;
 	void ReloadMap() override;

@@ -435,6 +435,8 @@ class CNetServer
 
 	bool m_FlushBatch = false;
 	bool m_aFlushPending[NET_MAX_CLIENTS] = {};
+	// Slots used by another transport (QUIC), not available for connections.
+	bool m_aSlotReserved[NET_MAX_CLIENTS] = {};
 
 	NETFUNC_NEWCLIENT m_pfnNewClient;
 	NETFUNC_NEWCLIENT_NOAUTH m_pfnNewClientNoAuth;
@@ -488,6 +490,10 @@ public:
 
 	//
 	void Drop(int ClientId, const char *pReason);
+
+	// Reserve a slot for a client of another transport (QUIC), so it is
+	// not used for incoming connections.
+	void SetSlotReserved(int ClientId, bool Reserved) { m_aSlotReserved[ClientId] = Reserved; }
 
 	// status requests
 	const NETADDR *ClientAddr(int ClientId) const { return m_aSlots[ClientId].m_Connection.PeerAddress(); }

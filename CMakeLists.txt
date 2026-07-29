@@ -885,6 +885,19 @@ set_glob(RUST_BASE GLOB_RECURSE "rs;toml" src/base
   # tidy-alphabetical-end
 )
 
+set_glob(RUST_ACCOUNTS GLOB "rs;toml" src/accounts
+  # tidy-alphabetical-start
+  Cargo.toml
+  bridge.rs
+  client.rs
+  game_server.rs
+  identity.rs
+  lib.rs
+  quic.rs
+  runtime.rs
+  # tidy-alphabetical-end
+)
+
 set_glob(RUST_ENGINE_INTERFACE GLOB "rs;toml" src/engine
   # tidy-alphabetical-start
   Cargo.toml
@@ -905,6 +918,8 @@ set_glob(RUST_ENGINE_SHARED GLOB_RECURSE "rs;toml" src/engine/shared
 
 set_src(RUST_BRIDGE_SHARED GLOB_RECURSE src/rust-bridge
   # tidy-alphabetical-start
+  accounts/bridge.cpp
+  accounts/bridge.h
   cpp/console.cpp
   cpp/console.h
   engine/shared/rust_version.cpp
@@ -999,6 +1014,7 @@ if(CMAKE_OSX_ARCHITECTURES)
 endif()
 
 set(RUST_SRC
+      ${RUST_ACCOUNTS}
       ${RUST_BASE}
       ${RUST_ENGINE_INTERFACE}
       ${RUST_ENGINE_SHARED}
@@ -2250,6 +2266,8 @@ set_src(ENGINE_SHARED GLOB_RECURSE src/engine/shared
   network_conn.cpp
   network_console.cpp
   network_console_conn.cpp
+  network_quic.cpp
+  network_quic.h
   network_server.cpp
   network_stun.cpp
   packer.cpp
@@ -2439,6 +2457,8 @@ if(CLIENT)
     backend/opengles/opengles_sl_program.cpp
     backend/vulkan/backend_vulkan.cpp
     backend/vulkan/backend_vulkan.h
+    accounts.cpp
+    accounts.h
     backend_sdl.cpp
     backend_sdl.h
     blocklist_driver.cpp
@@ -2552,6 +2572,7 @@ if(CLIENT)
     components/menu_background.h
     components/menus.cpp
     components/menus.h
+    components/menus_account.cpp
     components/menus_browser.cpp
     components/menus_demo.cpp
     components/menus_ingame.cpp
@@ -3273,6 +3294,7 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
     name_ban_test.cpp
     net_test.cpp
     netaddr_test.cpp
+    network_quic_test.cpp
     os_test.cpp
     packer_test.cpp
     prng_test.cpp

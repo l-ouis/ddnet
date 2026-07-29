@@ -10,6 +10,7 @@
 #include <base/types.h>
 
 #include <engine/client.h>
+#include <engine/client/accounts.h>
 #include <engine/client/checksum.h>
 #include <engine/client/friends.h>
 #include <engine/client/ghost.h>
@@ -22,6 +23,7 @@
 #include <engine/shared/demo.h>
 #include <engine/shared/fifo.h>
 #include <engine/shared/network.h>
+#include <engine/shared/network_quic.h>
 #include <engine/textrender.h>
 #include <engine/warning.h>
 
@@ -78,6 +80,22 @@ class CClient : public IClient, public CDemoPlayer::IListener
 	IUpdater *m_pUpdater = nullptr;
 
 	CNetClient m_aNetClient[NUM_CONNS];
+	CQuicNetClient m_aQuicNetClient[NUM_CONNS];
+	bool m_aConnViaQuic[NUM_CONNS] = {false, false, false};
+	CAccountsManager m_Accounts;
+	// pending QUIC connect, waiting for the account certificate
+	bool m_QuicConnectPending = false;
+	char m_aQuicConnectAddr[NETADDR_MAXSTRSIZE + 8] = "";
+	unsigned char m_aQuicServerPubKeyHash[32] = {};
+	NETADDR m_QuicServerAddr = NETADDR_ZEROED;
+	// addresses for falling back to the legacy transport if the QUIC
+	// connection cannot be established
+	NETADDR m_aQuicFallbackAddrs[MAX_SERVER_ADDRESSES] = {};
+	int m_NumQuicFallbackAddrs = 0;
+	// QUIC endpoint set by the connect_quic command, used instead of the
+	// server browser info for the next connect
+	int m_QuicForcePort = 0;
+	char m_aQuicForceHashHex[65] = "";
 	CDemoPlayer m_DemoPlayer;
 	CDemoRecorder m_aDemoRecorders[RECORDER_MAX];
 	CDemoRecorder m_aDemoRecordersSixup[RECORDER_MAX];
@@ -396,7 +414,7 @@ public:
 
 	bool IsSixup() const override { return m_Sixup; }
 
-	const NETADDR &ServerAddress() const override { return *m_aNetClient[CONN_MAIN].ServerAddress(); }
+	const NETADDR &ServerAddress() const override { return m_aConnViaQuic[CONN_MAIN] ? m_QuicServerAddr : *m_aNetClient[CONN_MAIN].ServerAddress(); }
 	int ConnectNetTypes() const override;
 	const char *ConnectAddressString() const override { return m_aConnectAddressStr; }
 	const char *MapDownloadName() const override { return m_aMapdownloadName; }
@@ -404,6 +422,23 @@ public:
 	int MapDownloadTotalsize() const override { return !m_pMapdownloadTask ? m_MapdownloadTotalsize : (int)m_pMapdownloadTask->Size(); }
 
 	void PumpNetwork();
+
+	// Connection state of a connection, over whichever transport it uses.
+	// While a QUIC connect is pending on the certificate, the connection
+	// counts as connecting.
+	int NetState(int Conn);
+	const char *NetErrorString(int Conn) const;
+	// Whether the given addresses belong to a server that advertised a
+	// QUIC endpoint via the server browser. On success the QUIC connect
+	// address and certificate public key hash are stored.
+	bool PrepareQuicConnect(const NETADDR *pAddrs, int NumAddrs);
+	// Starts the QUIC connection once the account certificate is ready.
+	void QuicConnectWithCert();
+	// Falls back to the legacy transport after a failed QUIC connect.
+	void QuicFallback(const char *pError);
+
+	IAccounts *Accounts() override { return &m_Accounts; }
+	bool ConnectedViaQuic() const override { return m_aConnViaQuic[CONN_MAIN]; }
 
 	void OnDemoPlayerSnapshot(void *pData, int Size) override;
 	void OnDemoPlayerMessage(void *pData, int Size) override;
@@ -420,6 +455,7 @@ public:
 	bool CtrlShiftKey(int Key, bool &Last);
 
 	static void Con_Connect(IConsole::IResult *pResult, void *pUserData);
+	static void Con_ConnectQuic(IConsole::IResult *pResult, void *pUserData);
 	static void Con_Disconnect(IConsole::IResult *pResult, void *pUserData);
 
 	static void Con_DummyConnect(IConsole::IResult *pResult, void *pUserData);

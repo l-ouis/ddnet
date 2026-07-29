@@ -239,6 +239,12 @@ public:
 	virtual void AutoCSV_Start() = 0;
 	virtual void ServerBrowserUpdate() = 0;
 
+	// accounts
+	virtual class IAccounts *Accounts() = 0;
+	// Whether the current/pending server connection uses the QUIC
+	// transport, which is required to be logged in on the server.
+	virtual bool ConnectedViaQuic() const = 0;
+
 	// gfx
 	virtual void Notify(const char *pTitle, const char *pMessage) = 0;
 	virtual void OnWindowResize() = 0;

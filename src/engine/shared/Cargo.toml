@@ -11,6 +11,7 @@ crate-type = ["rlib", "staticlib"]
 path = "lib.rs"
 
 [dependencies]
+ddnet-accounts-bridge = { path = "../../accounts" }
 ddnet-base = { path = "../../base" }
 ddnet-engine = { path = ".." }
 
