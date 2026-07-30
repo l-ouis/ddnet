@@ -352,6 +352,16 @@ fn anyhow_error(event: AccountEvent, err: &anyhow::Error) -> AccountEvent {
     event.error(anyhow_error_kind(err), err.to_string())
 }
 
+/// The one time codes are 16 bytes as hex (`Otp` upstream). Validating the
+/// format here keeps the raw hex decode errors of the upstream crates
+/// ("Odd number of digits", "Invalid character ... at position ...") away
+/// from users; a mistyped code is just an invalid code.
+fn normalize_token_hex(token_hex: &str) -> Option<String> {
+    let token = token_hex.trim();
+    (token.len() == 32 && token.chars().all(|char| char.is_ascii_hexdigit()))
+        .then(|| token.to_owned())
+}
+
 /// The account server certificates downloaded from this url are a trust
 /// root, so the url itself must be trustworthy. Loopback addresses are
 /// exempt for local testing.
@@ -568,13 +578,16 @@ impl AccountsClient {
     /// Logs in with the credential auth token that was sent by email.
     pub fn login_email(&self, email: &str, credential_auth_token_hex: &str) -> u64 {
         let email = email.to_owned();
-        let token = credential_auth_token_hex.to_owned();
+        let token = normalize_token_hex(credential_auth_token_hex);
         self.spawn(AccountEventKind::Login, move |profiles, event| async move {
             let email: email_address::EmailAddress = match email.parse() {
                 Ok(email) => email,
                 Err(_) => {
                     return event.error(AccountErrorKind::Other, "invalid email address".to_owned())
                 }
+            };
+            let Some(token) = token else {
+                return event.error(AccountErrorKind::Other, "invalid code".to_owned());
             };
             match profiles.login_email(email, token).await {
                 Ok(profile_key) => {
@@ -621,10 +634,13 @@ impl AccountsClient {
     /// Logs out all other sessions of the account of the given profile.
     pub fn logout_all(&self, profile_key: &str, account_token_hex: &str) -> u64 {
         let profile_key = profile_key.to_owned();
-        let token = account_token_hex.to_owned();
+        let token = normalize_token_hex(account_token_hex);
         self.spawn(
             AccountEventKind::LogoutAll,
             move |profiles, event| async move {
+                let Some(token) = token else {
+                    return event.error(AccountErrorKind::Other, "invalid code".to_owned());
+                };
                 match profiles.logout_all(token, &profile_key).await {
                     Ok(()) => event.success(),
                     Err(err) => anyhow_error(event, &err),
@@ -636,10 +652,13 @@ impl AccountsClient {
     /// Deletes the account of the given profile.
     pub fn delete(&self, profile_key: &str, account_token_hex: &str) -> u64 {
         let profile_key = profile_key.to_owned();
-        let token = account_token_hex.to_owned();
+        let token = normalize_token_hex(account_token_hex);
         self.spawn(
             AccountEventKind::Delete,
             move |profiles, event| async move {
+                let Some(token) = token else {
+                    return event.error(AccountErrorKind::Other, "invalid code".to_owned());
+                };
                 match profiles.delete(token, &profile_key).await {
                     Ok(()) => event.success(),
                     Err(err) => anyhow_error(event, &err),
@@ -656,11 +675,16 @@ impl AccountsClient {
         credential_auth_token_hex: &str,
     ) -> u64 {
         let profile_key = profile_key.to_owned();
-        let account_token = account_token_hex.to_owned();
-        let credential_auth_token = credential_auth_token_hex.to_owned();
+        let account_token = normalize_token_hex(account_token_hex);
+        let credential_auth_token = normalize_token_hex(credential_auth_token_hex);
         self.spawn(
             AccountEventKind::LinkCredential,
             move |profiles, event| async move {
+                let (Some(account_token), Some(credential_auth_token)) =
+                    (account_token, credential_auth_token)
+                else {
+                    return event.error(AccountErrorKind::Other, "invalid code".to_owned());
+                };
                 match profiles
                     .link_credential(account_token, credential_auth_token, &profile_key)
                     .await
@@ -675,10 +699,13 @@ impl AccountsClient {
     /// Unlinks a credential from the account of the given profile.
     pub fn unlink_credential(&self, profile_key: &str, credential_auth_token_hex: &str) -> u64 {
         let profile_key = profile_key.to_owned();
-        let token = credential_auth_token_hex.to_owned();
+        let token = normalize_token_hex(credential_auth_token_hex);
         self.spawn(
             AccountEventKind::UnlinkCredential,
             move |profiles, event| async move {
+                let Some(token) = token else {
+                    return event.error(AccountErrorKind::Other, "invalid code".to_owned());
+                };
                 match profiles.unlink_credential(token, &profile_key).await {
                     Ok(()) => event.success(),
                     Err(err) => anyhow_error(event, &err),

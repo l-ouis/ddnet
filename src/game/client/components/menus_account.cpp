@@ -2,6 +2,8 @@
 /* If you are missing that file, acquire a complete release at teeworlds.com.                */
 #include "menus.h"
 
+#include <base/str.h>
+
 #include <engine/accounts.h>
 #include <engine/client.h>
 #include <engine/shared/config.h>
@@ -24,6 +26,25 @@ static constexpr size_t MAX_VISIBLE_PROFILES = 5;
 static ColorRGBA AccountButtonColor(bool Enabled)
 {
 	return ColorRGBA(1.0f, 1.0f, 1.0f, Enabled ? 0.5f : 0.25f);
+}
+
+// The one time codes are 16 bytes as hex, see the account server's `Otp`.
+static bool IsValidAccountCode(const char *pCode)
+{
+	if(str_length(pCode) != 32)
+	{
+		return false;
+	}
+	for(int Position = 0; Position < 32; Position++)
+	{
+		const char Char = pCode[Position];
+		const bool Hex = (Char >= '0' && Char <= '9') || (Char >= 'a' && Char <= 'f') || (Char >= 'A' && Char <= 'F');
+		if(!Hex)
+		{
+			return false;
+		}
+	}
+	return true;
 }
 
 void CMenus::SetAccountWaitState(EAccountState WaitState, EAccountState ReturnState)
@@ -557,45 +578,59 @@ void CMenus::RenderAccountTokenEnter(CUIRect MainView)
 		   Ui()->ConsumeHotkey(CUi::HOTKEY_ENTER)) &&
 		ContinueEnabled)
 	{
-		IAccounts *pAccounts = Client()->Accounts();
-		switch(m_AccountFlow)
+		// Reject codes that cannot be a one time code before making a
+		// request, with a message that does not go into hex syntax.
+		char aCode[64];
+		str_copy(aCode, str_utf8_skip_whitespaces(m_AccountTokenInput.GetString()), sizeof(aCode));
+		str_utf8_trim_right(aCode);
+		if(!IsValidAccountCode(aCode))
 		{
-		case EAccountFlow::LOGIN:
-			m_AccountRequestId = pAccounts->LoginEmail(m_aAccountFlowEmail, m_AccountTokenInput.GetString());
-			SetAccountWaitState(EAccountState::OP_WAIT, EAccountState::TOKEN_ENTER);
-			break;
-		case EAccountFlow::LOGOUT_ALL:
-			m_AccountRequestId = pAccounts->LogoutAll(m_aAccountInfoProfileKey, m_AccountTokenInput.GetString());
-			SetAccountWaitState(EAccountState::OP_WAIT, EAccountState::TOKEN_ENTER);
-			break;
-		case EAccountFlow::DELETE:
-			PopupConfirm(Localize("Delete account"), Localize("This permanently deletes your account and all linked credentials. This cannot be undone."),
-				Localize("Delete account"), Localize("Cancel"), &CMenus::PopupConfirmAccountDelete);
-			break;
-		case EAccountFlow::LINK_EMAIL:
-			if(m_AccountFlowStep == 0)
+			str_copy(m_aAccountFlowError, Localize("This code is not valid. Check it for typos and try again."));
+		}
+		else
+		{
+			m_AccountTokenInput.Set(aCode);
+			m_aAccountFlowError[0] = '\0';
+			IAccounts *pAccounts = Client()->Accounts();
+			switch(m_AccountFlow)
 			{
-				// The account token is ready, continue by asking for the
-				// new email address to link.
-				str_copy(m_aAccountToken, m_AccountTokenInput.GetString());
-				m_AccountFlowStep = 1;
-				m_AccountTokenInput.Clear();
-				m_aAccountFlowError[0] = '\0';
-				m_AccountState = EAccountState::EMAIL_ENTER;
-			}
-			else
-			{
-				m_AccountRequestId = pAccounts->LinkCredential(m_aAccountInfoProfileKey, m_aAccountToken, m_AccountTokenInput.GetString());
+			case EAccountFlow::LOGIN:
+				m_AccountRequestId = pAccounts->LoginEmail(m_aAccountFlowEmail, m_AccountTokenInput.GetString());
 				SetAccountWaitState(EAccountState::OP_WAIT, EAccountState::TOKEN_ENTER);
+				break;
+			case EAccountFlow::LOGOUT_ALL:
+				m_AccountRequestId = pAccounts->LogoutAll(m_aAccountInfoProfileKey, m_AccountTokenInput.GetString());
+				SetAccountWaitState(EAccountState::OP_WAIT, EAccountState::TOKEN_ENTER);
+				break;
+			case EAccountFlow::DELETE:
+				PopupConfirm(Localize("Delete account"), Localize("This permanently deletes your account and all linked credentials. This cannot be undone."),
+					Localize("Delete account"), Localize("Cancel"), &CMenus::PopupConfirmAccountDelete);
+				break;
+			case EAccountFlow::LINK_EMAIL:
+				if(m_AccountFlowStep == 0)
+				{
+					// The account token is ready, continue by asking for the
+					// new email address to link.
+					str_copy(m_aAccountToken, m_AccountTokenInput.GetString());
+					m_AccountFlowStep = 1;
+					m_AccountTokenInput.Clear();
+					m_aAccountFlowError[0] = '\0';
+					m_AccountState = EAccountState::EMAIL_ENTER;
+				}
+				else
+				{
+					m_AccountRequestId = pAccounts->LinkCredential(m_aAccountInfoProfileKey, m_aAccountToken, m_AccountTokenInput.GetString());
+					SetAccountWaitState(EAccountState::OP_WAIT, EAccountState::TOKEN_ENTER);
+				}
+				break;
+			case EAccountFlow::UNLINK_EMAIL:
+				m_AccountRequestId = pAccounts->UnlinkCredential(m_aAccountInfoProfileKey, m_AccountTokenInput.GetString());
+				SetAccountWaitState(EAccountState::OP_WAIT, EAccountState::TOKEN_ENTER);
+				break;
+			case EAccountFlow::NONE:
+				m_AccountState = EAccountState::OVERVIEW;
+				break;
 			}
-			break;
-		case EAccountFlow::UNLINK_EMAIL:
-			m_AccountRequestId = pAccounts->UnlinkCredential(m_aAccountInfoProfileKey, m_AccountTokenInput.GetString());
-			SetAccountWaitState(EAccountState::OP_WAIT, EAccountState::TOKEN_ENTER);
-			break;
-		case EAccountFlow::NONE:
-			m_AccountState = EAccountState::OVERVIEW;
-			break;
 		}
 	}
 
