@@ -1077,7 +1077,10 @@ struct SAccountCredential final {
 struct SAccountEvent final {
   // False if no event was pending.
   bool m_Valid CXX_DEFAULT_VALUE(false);
-  // Id that was returned when the operation was started.
+  // Id that was returned when the operation was started. 0 means
+  // the event is unsolicited, currently only LOGOUT events for a
+  // profile that was removed as side effect of CERT_AND_KEY (the
+  // removed profile key is in the payload).
   ::std::uint64_t m_RequestId CXX_DEFAULT_VALUE(0);
   // Operation this event belongs to.
   ::accounts::EAccountEventKind m_Kind;
@@ -1085,10 +1088,15 @@ struct SAccountEvent final {
   bool m_Success CXX_DEFAULT_VALUE(false);
   // Error class, NONE on success.
   ::accounts::EAccountErrorKind m_ErrorKind;
-  // Human readable error description.
+  // Human readable error description, empty on success.
   ::rust::String m_Error;
+  // Human readable warning for operations that succeeded in a
+  // degraded way, e.g. CERT_AND_KEY falling back to a self signed
+  // certificate.
+  ::rust::String m_Warning;
   // Operation specific payload: profile key for LOGIN, token for
-  // steam token operations, url for WEB_VALIDATION_NEEDED errors.
+  // steam token operations, url for WEB_VALIDATION_NEEDED errors,
+  // removed profile key for unsolicited LOGOUT events.
   ::rust::String m_Payload;
   // Certificate in der format, for CERT_AND_KEY.
   ::rust::Vec<::std::uint8_t> m_aCertDer;
@@ -1168,13 +1176,15 @@ struct SGameServerLogin final {
   bool m_Valid CXX_DEFAULT_VALUE(false);
   // Id that was returned by `BeginLogin`.
   ::std::uint64_t m_RequestId CXX_DEFAULT_VALUE(0);
-  // The account id, 0 if the client has no (valid) account.
+  // The account id, 0 if the client has no (valid) account or the
+  // database registration failed (the client must be treated as
+  // anonymous then).
   ::std::int64_t m_AccountId CXX_DEFAULT_VALUE(0);
   // Sha256 fingerprint of the public key of the client certificate.
   ::rust::Vec<::std::uint8_t> m_aPublicKeyHash;
   // Whether this account was seen the first time on this server.
   bool m_NewAccount CXX_DEFAULT_VALUE(false);
-  // Error description if the database registration failed.
+  // Error description if the login could not be resolved.
   ::rust::String m_Error;
 
   using IsRelocatable = ::std::true_type;
@@ -1251,11 +1261,10 @@ struct CAccountsClient final : public ::rust::Opaque {
   ::std::uint64_t AccountInfo(::rust::Str ProfileKey) const noexcept;
 
   // Requests a certificate and session key for connecting to a game
-  // server. Also works without an account (self signed cert).
+  // server, also used to refresh a certificate that is about to
+  // expire. Also works without an account (self signed cert, with a
+  // warning in the event).
   ::std::uint64_t RequestCertAndKey() const noexcept;
-
-  // Refreshes the account certificate if it is about to expire.
-  void TryRefreshCert() const noexcept;
 
   // Currently stored profiles.
   ::rust::Vec<::accounts::SAccountProfile> Profiles() const noexcept;
@@ -1291,7 +1300,8 @@ struct CQuicClient final : public ::rust::Opaque {
   // Closes the connection with the given reason.
   void Close(::rust::Str Reason) const noexcept;
 
-  // Milliseconds since the last time data arrived from the server.
+  // Milliseconds since the last time data arrived from the server,
+  // 0 while the connection is not established.
   ::std::uint64_t MillisSinceReceive() const noexcept;
 
   // Current smoothed round trip time to the server in milliseconds.
@@ -1329,11 +1339,13 @@ struct CQuicServer final : public ::rust::Opaque {
   // Closes the connection to the given peer with the given reason.
   void ClosePeer(::std::uint64_t PeerId, ::rust::Str Reason) const noexcept;
 
-  // Whether new connections are accepted.
-  void SetAcceptConnections(bool Accept) const noexcept;
-
   // Current smoothed round trip time to the peer in milliseconds.
   ::std::uint64_t RttMillis(::std::uint64_t PeerId) const noexcept;
+
+  // Milliseconds since the last stream frame or datagram arrived
+  // from the peer, -1 if the peer is unknown. QUIC keep alives do
+  // not count, so this is an application level liveness signal.
+  ::std::int64_t MillisSinceReceive(::std::uint64_t PeerId) const noexcept;
 
   ~CQuicServer() = delete;
 
@@ -1350,10 +1362,13 @@ private:
 #define CXXBRIDGE1_STRUCT_accounts$CAccountsGameServer
 // Game server side account manager.
 struct CAccountsGameServer final : public ::rust::Opaque {
-  // The error that occurred during creation, empty if none.
+  // The hard configuration error (invalid account server url) that
+  // occurred during creation, empty if none. Network failures are
+  // not reported here, initialization keeps retrying.
   ::rust::String Error() const noexcept;
 
   // Starts resolving the account for the given client certificate.
+  // Logins that arrive before initialization finished are queued.
   ::std::uint64_t BeginLogin(::rust::Slice<::std::uint8_t const> CertDer) const noexcept;
 
   // Polls the next resolved login.
@@ -1406,8 +1421,6 @@ void accounts$cxxbridge1$194$CAccountsClient$PollEvent(::accounts::CAccountsClie
 
 ::std::uint64_t accounts$cxxbridge1$194$CAccountsClient$RequestCertAndKey(::accounts::CAccountsClient const &self) noexcept;
 
-void accounts$cxxbridge1$194$CAccountsClient$TryRefreshCert(::accounts::CAccountsClient const &self) noexcept;
-
 void accounts$cxxbridge1$194$CAccountsClient$Profiles(::accounts::CAccountsClient const &self, ::rust::Vec<::accounts::SAccountProfile> *return$) noexcept;
 
 void accounts$cxxbridge1$194$CAccountsClient$SetProfile(::accounts::CAccountsClient const &self, ::rust::Str ProfileKey) noexcept;
@@ -1416,7 +1429,7 @@ void accounts$cxxbridge1$194$CAccountsClient$SetProfileDisplayName(::accounts::C
 ::std::size_t accounts$cxxbridge1$194$CQuicClient$operator$sizeof() noexcept;
 ::std::size_t accounts$cxxbridge1$194$CQuicClient$operator$alignof() noexcept;
 
-::accounts::CQuicClient *accounts$cxxbridge1$194$CreateQuicClient(::rust::Str Addr, ::rust::Slice<::std::uint8_t const> ServerPubKeyHash, ::rust::Slice<::std::uint8_t const> CertDer, ::rust::Slice<::std::uint8_t const> KeyDer, ::std::uint64_t IdleTimeoutMs) noexcept;
+::accounts::CQuicClient *accounts$cxxbridge1$194$CreateQuicClient(::rust::Str Addr, ::rust::Str BindAddr, ::rust::Slice<::std::uint8_t const> ServerPubKeyHash, ::rust::Slice<::std::uint8_t const> CertDer, ::rust::Slice<::std::uint8_t const> KeyDer, ::std::uint64_t IdleTimeoutMs) noexcept;
 
 void accounts$cxxbridge1$194$CQuicClient$PollEvent(::accounts::CQuicClient &self, ::accounts::SQuicEvent *return$) noexcept;
 
@@ -1442,9 +1455,9 @@ bool accounts$cxxbridge1$194$CQuicServer$Send(::accounts::CQuicServer const &sel
 
 void accounts$cxxbridge1$194$CQuicServer$ClosePeer(::accounts::CQuicServer const &self, ::std::uint64_t PeerId, ::rust::Str Reason) noexcept;
 
-void accounts$cxxbridge1$194$CQuicServer$SetAcceptConnections(::accounts::CQuicServer const &self, bool Accept) noexcept;
-
 ::std::uint64_t accounts$cxxbridge1$194$CQuicServer$RttMillis(::accounts::CQuicServer const &self, ::std::uint64_t PeerId) noexcept;
+
+::std::int64_t accounts$cxxbridge1$194$CQuicServer$MillisSinceReceive(::accounts::CQuicServer const &self, ::std::uint64_t PeerId) noexcept;
 ::std::size_t accounts$cxxbridge1$194$CAccountsGameServer$operator$sizeof() noexcept;
 ::std::size_t accounts$cxxbridge1$194$CAccountsGameServer$operator$alignof() noexcept;
 
@@ -1539,10 +1552,6 @@ void accounts$cxxbridge1$194$LoadOrGenerateServerIdentity(::rust::Str KeyPath, :
   return accounts$cxxbridge1$194$CAccountsClient$RequestCertAndKey(*this);
 }
 
-void CAccountsClient::TryRefreshCert() const noexcept {
-  accounts$cxxbridge1$194$CAccountsClient$TryRefreshCert(*this);
-}
-
 ::rust::Vec<::accounts::SAccountProfile> CAccountsClient::Profiles() const noexcept {
   ::rust::MaybeUninit<::rust::Vec<::accounts::SAccountProfile>> return$;
   accounts$cxxbridge1$194$CAccountsClient$Profiles(*this, &return$.value);
@@ -1566,11 +1575,15 @@ void CAccountsClient::SetProfileDisplayName(::rust::Str ProfileKey, ::rust::Str 
 }
 
 // Creates the client and starts connecting to `Addr` in the
-// background. The server certificate is verified against the
-// sha256 fingerprint `ServerPubKeyHash` (32 bytes). `CertDer` and
+// background. `BindAddr` is the local IP without port to bind the
+// endpoint to, empty for the unspecified address of the target's
+// address family; a bind address that cannot be parsed, bound or
+// whose address family does not match the target fails the
+// connect. The server certificate is verified against the sha256
+// fingerprint `ServerPubKeyHash` (32 bytes). `CertDer` and
 // `KeyDer` are the own certificate and pkcs8 session key.
-::rust::Box<::accounts::CQuicClient> CreateQuicClient(::rust::Str Addr, ::rust::Slice<::std::uint8_t const> ServerPubKeyHash, ::rust::Slice<::std::uint8_t const> CertDer, ::rust::Slice<::std::uint8_t const> KeyDer, ::std::uint64_t IdleTimeoutMs) noexcept {
-  return ::rust::Box<::accounts::CQuicClient>::from_raw(accounts$cxxbridge1$194$CreateQuicClient(Addr, ServerPubKeyHash, CertDer, KeyDer, IdleTimeoutMs));
+::rust::Box<::accounts::CQuicClient> CreateQuicClient(::rust::Str Addr, ::rust::Str BindAddr, ::rust::Slice<::std::uint8_t const> ServerPubKeyHash, ::rust::Slice<::std::uint8_t const> CertDer, ::rust::Slice<::std::uint8_t const> KeyDer, ::std::uint64_t IdleTimeoutMs) noexcept {
+  return ::rust::Box<::accounts::CQuicClient>::from_raw(accounts$cxxbridge1$194$CreateQuicClient(Addr, BindAddr, ServerPubKeyHash, CertDer, KeyDer, IdleTimeoutMs));
 }
 
 ::accounts::SQuicEvent CQuicClient::PollEvent() noexcept {
@@ -1633,12 +1646,12 @@ void CQuicServer::ClosePeer(::std::uint64_t PeerId, ::rust::Str Reason) const no
   accounts$cxxbridge1$194$CQuicServer$ClosePeer(*this, PeerId, Reason);
 }
 
-void CQuicServer::SetAcceptConnections(bool Accept) const noexcept {
-  accounts$cxxbridge1$194$CQuicServer$SetAcceptConnections(*this, Accept);
-}
-
 ::std::uint64_t CQuicServer::RttMillis(::std::uint64_t PeerId) const noexcept {
   return accounts$cxxbridge1$194$CQuicServer$RttMillis(*this, PeerId);
+}
+
+::std::int64_t CQuicServer::MillisSinceReceive(::std::uint64_t PeerId) const noexcept {
+  return accounts$cxxbridge1$194$CQuicServer$MillisSinceReceive(*this, PeerId);
 }
 
 ::std::size_t CAccountsGameServer::layout::size() noexcept {
@@ -1651,7 +1664,8 @@ void CQuicServer::SetAcceptConnections(bool Accept) const noexcept {
 
 // Creates the account manager. `DbFilePath` is the sqlite database
 // for the user table, `StoragePath` caches the account server
-// certificates.
+// certificates. Returns immediately, initialization runs in the
+// background and is retried until it succeeds.
 ::rust::Box<::accounts::CAccountsGameServer> CreateAccountsGameServer(::rust::Str DbFilePath, ::rust::Str StoragePath, ::rust::Str AccountServerUrl) noexcept {
   return ::rust::Box<::accounts::CAccountsGameServer>::from_raw(accounts$cxxbridge1$194$CreateAccountsGameServer(DbFilePath, StoragePath, AccountServerUrl));
 }

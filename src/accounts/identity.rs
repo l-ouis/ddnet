@@ -33,8 +33,15 @@ pub fn load_or_generate_identity(key_path: &Path) -> anyhow::Result<ServerIdenti
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
             let key = SigningKey::generate(&mut rand::rngs::OsRng);
             let pem = key.to_pkcs8_pem(LineEnding::LF)?;
-            write_secret_file(key_path, pem.as_bytes())?;
-            key
+            match write_secret_file(key_path, pem.as_bytes()) {
+                Ok(()) => key,
+                Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
+                    // Concurrent first run of another server sharing the
+                    // storage, use the key of the winner.
+                    SigningKey::from_pkcs8_pem(&std::fs::read_to_string(key_path)?)?
+                }
+                Err(err) => return Err(err.into()),
+            }
         }
         Err(err) => return Err(err.into()),
     };
@@ -63,19 +70,36 @@ pub fn load_or_generate_identity(key_path: &Path) -> anyhow::Result<ServerIdenti
     })
 }
 
-#[cfg(unix)]
+/// Writes the key file via a temporary file so a crash cannot leave a
+/// truncated key file behind. Fails with `AlreadyExists` if the file was
+/// created concurrently, the first writer wins.
 fn write_secret_file(path: &Path, data: &[u8]) -> std::io::Result<()> {
     use std::io::Write;
-    use std::os::unix::fs::OpenOptionsExt;
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(path)?;
-    file.write_all(data)
-}
-
-#[cfg(not(unix))]
-fn write_secret_file(path: &Path, data: &[u8]) -> std::io::Result<()> {
-    std::fs::write(path, data)
+    let mut tmp_path = path.as_os_str().to_owned();
+    tmp_path.push(format!(".{}.tmp", std::process::id()));
+    let tmp_path = Path::new(&tmp_path);
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(tmp_path)?;
+    let written = file
+        .write_all(data)
+        .and_then(|()| file.sync_all())
+        .map(|()| drop(file));
+    let result = written.and_then(|()| {
+        // The hard link fails with AlreadyExists if another server created
+        // the file in the meantime. Fall back to a plain rename on file
+        // systems without hard links.
+        match std::fs::hard_link(tmp_path, path) {
+            Ok(()) => Ok(()),
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => Err(err),
+            Err(_) => std::fs::rename(tmp_path, path),
+        }
+    });
+    let _ = std::fs::remove_file(tmp_path);
+    result
 }

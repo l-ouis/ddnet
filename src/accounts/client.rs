@@ -13,9 +13,16 @@ use std::sync::Arc;
 use std::time::SystemTime;
 
 use anyhow::anyhow;
+use ddnet_account_client::account_info::AccountInfoResult;
 use ddnet_account_client::account_token::AccountTokenResult;
 use ddnet_account_client::credential_auth_token::CredentialAuthTokenResult;
+use ddnet_account_client::delete::DeleteResult;
 use ddnet_account_client::errors::{FsLikeError, HttpLikeError};
+use ddnet_account_client::link_credential::LinkCredentialResult;
+use ddnet_account_client::login::LoginResult;
+use ddnet_account_client::logout::LogoutResult;
+use ddnet_account_client::logout_all::LogoutAllResult;
+use ddnet_account_client::unlink_credential::UnlinkCredentialResult;
 use ddnet_account_client_http_fs::client::ClientHttpTokioFs;
 use ddnet_account_client_http_fs::fs::Fs;
 use ddnet_account_client_http_fs::http::Http;
@@ -106,6 +113,10 @@ pub struct AccountEvent {
     pub error_kind: AccountErrorKind,
     /// Human readable error description.
     pub error: String,
+    /// Human readable warning for operations that succeeded in a degraded
+    /// way, e.g. [`AccountEventKind::CertAndKey`] falling back to a self
+    /// signed certificate.
+    pub warning: String,
     /// Operation specific payload, see [`AccountEventKind`].
     pub payload: String,
     /// Certificate in der format, for [`AccountEventKind::CertAndKey`].
@@ -130,6 +141,7 @@ impl AccountEvent {
             success: false,
             error_kind: AccountErrorKind::None,
             error: String::new(),
+            warning: String::new(),
             payload: String::new(),
             cert_der: Vec::new(),
             key_der: Vec::new(),
@@ -267,15 +279,77 @@ fn account_token_error(event: AccountEvent, err: &AccountTokenResult) -> Account
     }
 }
 
+/// Classifies the anyhow wrapped errors of the upstream `Profiles`
+/// operations. Each operation has its own result enum with http/fs/logic
+/// variants, all of them end up type erased in `anyhow::Error`, so this
+/// downcasts against every known enum. The goal is that C++ can reliably
+/// distinguish "network down" from e.g. "wrong code".
+fn anyhow_error_kind(err: &anyhow::Error) -> AccountErrorKind {
+    if let Some(err) = err.downcast_ref::<HttpLikeError>() {
+        return http_error_kind(err);
+    }
+    if err.downcast_ref::<FsLikeError>().is_some() {
+        return AccountErrorKind::Fs;
+    }
+    if let Some(err) = err.downcast_ref::<LoginResult>() {
+        return match err {
+            LoginResult::HttpLikeError(err) => http_error_kind(err),
+            LoginResult::FsLikeError(_) => AccountErrorKind::Fs,
+            LoginResult::AccountServerRequstError(err) => request_error_kind(err),
+            LoginResult::Other(_) => AccountErrorKind::Other,
+        };
+    }
+    if let Some(err) = err.downcast_ref::<LogoutResult>() {
+        return match err {
+            LogoutResult::HttpLikeError(err) => http_error_kind(err),
+            LogoutResult::FsLikeError(_) => AccountErrorKind::Fs,
+            LogoutResult::SessionWasInvalid | LogoutResult::Other(_) => AccountErrorKind::Other,
+        };
+    }
+    if let Some(err) = err.downcast_ref::<LogoutAllResult>() {
+        return match err {
+            LogoutAllResult::HttpLikeError(err) => http_error_kind(err),
+            LogoutAllResult::FsLikeError(_) => AccountErrorKind::Fs,
+            LogoutAllResult::Other(_) => AccountErrorKind::Other,
+        };
+    }
+    if let Some(err) = err.downcast_ref::<DeleteResult>() {
+        return match err {
+            DeleteResult::HttpLikeError(err) => http_error_kind(err),
+            DeleteResult::FsLikeError(_) => AccountErrorKind::Fs,
+            DeleteResult::Other(_) => AccountErrorKind::Other,
+        };
+    }
+    if let Some(err) = err.downcast_ref::<LinkCredentialResult>() {
+        return match err {
+            LinkCredentialResult::HttpLikeError(err) => http_error_kind(err),
+            LinkCredentialResult::FsLikeError(_) => AccountErrorKind::Fs,
+            LinkCredentialResult::AccountServerRequstError(err) => request_error_kind(err),
+            LinkCredentialResult::Other(_) => AccountErrorKind::Other,
+        };
+    }
+    if let Some(err) = err.downcast_ref::<UnlinkCredentialResult>() {
+        return match err {
+            UnlinkCredentialResult::HttpLikeError(err) => http_error_kind(err),
+            UnlinkCredentialResult::FsLikeError(_) => AccountErrorKind::Fs,
+            UnlinkCredentialResult::AccountServerRequstError(err) => request_error_kind(err),
+            UnlinkCredentialResult::Other(_) => AccountErrorKind::Other,
+        };
+    }
+    if let Some(err) = err.downcast_ref::<AccountInfoResult>() {
+        return match err {
+            AccountInfoResult::HttpLikeError(err) => http_error_kind(err),
+            AccountInfoResult::FsLikeError(_) => AccountErrorKind::Fs,
+            AccountInfoResult::SessionWasInvalid | AccountInfoResult::Other(_) => {
+                AccountErrorKind::Other
+            }
+        };
+    }
+    AccountErrorKind::Other
+}
+
 fn anyhow_error(event: AccountEvent, err: &anyhow::Error) -> AccountEvent {
-    let kind = if err.downcast_ref::<HttpLikeError>().is_some() {
-        AccountErrorKind::Http
-    } else if err.downcast_ref::<FsLikeError>().is_some() {
-        AccountErrorKind::Fs
-    } else {
-        AccountErrorKind::Other
-    };
-    event.error(kind, err.to_string())
+    event.error(anyhow_error_kind(err), err.to_string())
 }
 
 /// The account server certificates downloaded from this url are a trust
@@ -651,20 +725,37 @@ impl AccountsClient {
     }
 
     /// Requests a certificate and session key for connecting to a game
-    /// server. Also works without an account (self signed), a warning is
-    /// put into the error fields then.
+    /// server, also used to refresh a certificate that is about to expire.
+    /// Also works without an account (self signed), a warning is put into
+    /// the warning field then. If the upstream profile manager silently
+    /// removed the profile (invalid session, fs error), an unsolicited
+    /// [`AccountEventKind::Logout`] event with request id 0 and the removed
+    /// profile key as payload is emitted additionally.
     pub fn cert_and_key(&self) -> u64 {
+        let events = self.events.clone();
         self.spawn(
             AccountEventKind::CertAndKey,
             move |profiles, event| async move {
+                let profile_before = {
+                    let (profiles, current) = profiles.profiles();
+                    profiles.contains_key(&current).then_some(current)
+                };
                 let (account_data, cert, warning) = profiles.signed_cert_and_key_pair().await;
+                if let Some(profile_before) = profile_before {
+                    if !profiles.profiles().0.contains_key(&profile_before) {
+                        let mut removed = AccountEvent::new(0, AccountEventKind::Logout);
+                        removed.success = true;
+                        removed.payload = profile_before;
+                        events.lock().push_back(removed);
+                    }
+                }
                 let mut event = event.success();
                 match (cert.to_der(), account_data.private_key.to_pkcs8_der()) {
                     (Ok(cert_der), Ok(key_der)) => {
                         event.cert_der = cert_der;
                         event.key_der = key_der.as_bytes().to_vec();
                         if let Some(warning) = warning {
-                            event.error = warning.to_string();
+                            event.warning = warning.to_string();
                         }
                         event
                     }
@@ -679,15 +770,6 @@ impl AccountsClient {
                 }
             },
         )
-    }
-
-    /// Refreshes the account certificate if it is about to expire.
-    pub fn try_refresh_cert(&self) {
-        if let Some(profiles) = self.profiles.clone() {
-            runtime().spawn(async move {
-                let _ = profiles.signed_cert_and_key_pair().await;
-            });
-        }
     }
 
     /// Currently stored profiles and which one is active.
@@ -743,5 +825,51 @@ pub fn cert_expires_in_seconds(cert_der: &[u8]) -> i64 {
     match expires_at.duration_since(SystemTime::now()) {
         Ok(duration) => duration.as_secs() as i64,
         Err(err) => -(err.duration().as_secs() as i64),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ddnet_accounts_shared::account_server::login::LoginError;
+
+    fn classify(err: anyhow::Error) -> AccountErrorKind {
+        anyhow_error(AccountEvent::new(1, AccountEventKind::Login), &err).error_kind
+    }
+
+    #[test]
+    fn login_error_classification() {
+        // Network down vs. wrong code must be distinguishable for C++.
+        assert_eq!(
+            classify(anyhow::Error::new(LoginResult::HttpLikeError(
+                HttpLikeError::Request
+            ))),
+            AccountErrorKind::Http
+        );
+        assert_eq!(
+            classify(anyhow::Error::new(LoginResult::FsLikeError(
+                FsLikeError::Fs(std::io::Error::other("disk broken"))
+            ))),
+            AccountErrorKind::Fs
+        );
+        assert_eq!(
+            classify(anyhow::Error::new(LoginResult::AccountServerRequstError(
+                AccountServerRequestError::RateLimited("slow down".to_owned())
+            ))),
+            AccountErrorKind::RateLimited
+        );
+        let logic = anyhow::Error::new(LoginResult::AccountServerRequstError(
+            AccountServerRequestError::LogicError(LoginError::TokenInvalid),
+        ));
+        let event = anyhow_error(AccountEvent::new(1, AccountEventKind::Login), &logic);
+        assert_eq!(event.error_kind, AccountErrorKind::Other);
+        assert!(event.error.contains("not valid anymore"), "{}", event.error);
+        // Errors from other layers of the upstream code stay Other.
+        assert_eq!(classify(anyhow!("unknown")), AccountErrorKind::Other);
+        // Directly wrapped http/fs errors, e.g. from the profile factory.
+        assert_eq!(
+            classify(anyhow::Error::new(HttpLikeError::Status(500))),
+            AccountErrorKind::Http
+        );
     }
 }

@@ -22,6 +22,8 @@ public:
 		LINK_CREDENTIAL,
 		UNLINK_CREDENTIAL,
 		ACCOUNT_INFO,
+		// Internal certificate requests of the engine. Never delivered
+		// via IAccounts::FetchEvents().
 		CERT_AND_KEY,
 	};
 
@@ -50,13 +52,21 @@ public:
 		std::string m_Identifier;
 	};
 
+	// Id of the request this event completes. 0 means the event is
+	// unsolicited, currently only LOGOUT events when a profile was
+	// removed because its session became invalid; the removed profile
+	// key is in m_Payload.
 	uint64_t m_RequestId = 0;
 	EKind m_Kind = EKind::LOGIN;
 	bool m_Success = false;
 	EError m_Error = EError::NONE;
 	std::string m_ErrorText;
+	// Human readable warning for operations that succeeded in a
+	// degraded way. Empty otherwise.
+	std::string m_Warning;
 	// Operation specific: profile key for LOGIN, token for steam token
-	// operations, url for WEB_VALIDATION_NEEDED errors.
+	// operations, url for WEB_VALIDATION_NEEDED errors, removed profile
+	// key for unsolicited LOGOUT events.
 	std::string m_Payload;
 	// For ACCOUNT_INFO events.
 	int64_t m_AccountId = 0;
@@ -137,7 +147,8 @@ public:
 	// Changes the display name of a profile.
 	virtual void SetProfileDisplayName(const char *pProfileKey, const char *pDisplayName) = 0;
 
-	// Returns all completed operations since the last call.
+	// Returns all completed operations since the last call. Also
+	// delivers unsolicited events, see CAccountEvent::m_RequestId.
 	virtual std::vector<CAccountEvent> FetchEvents() = 0;
 };
 

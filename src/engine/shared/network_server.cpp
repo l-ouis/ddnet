@@ -166,9 +166,18 @@ void CNetServer::SendControl(NETADDR &Addr, int ControlMsg, const void *pExtra, 
 	CNetBase::SendControlMsg(m_Socket, &Addr, 0, ControlMsg, pExtra, ExtraSize, SecurityToken);
 }
 
+void CNetServer::SetNumOtherClientsWithAddrCallback(NETFUNC_NUMCLIENTSWITHADDR pfnNumOtherClientsWithAddr, void *pUser)
+{
+	m_pfnNumOtherClientsWithAddr = pfnNumOtherClientsWithAddr;
+	m_pNumOtherClientsWithAddrUser = pUser;
+}
+
 int CNetServer::NumClientsWithAddr(NETADDR Addr)
 {
 	int FoundAddr = 0;
+	if(m_pfnNumOtherClientsWithAddr)
+		FoundAddr += m_pfnNumOtherClientsWithAddr(&Addr, m_pNumOtherClientsWithAddrUser);
+
 	for(int i = 0; i < MaxClients(); ++i)
 	{
 		if(m_aSlots[i].m_Connection.State() == CNetConnection::EState::OFFLINE ||
@@ -765,6 +774,11 @@ void CNetServer::ResumeOldConnection(int ClientId, int OrigId)
 {
 	m_aSlots[ClientId].m_Connection.ResumeConnection(ClientAddr(OrigId), m_aSlots[OrigId].m_Connection.SeqSequence(), m_aSlots[OrigId].m_Connection.AckSequence(), m_aSlots[OrigId].m_Connection.SecurityToken(), m_aSlots[OrigId].m_Connection.ResendBuffer(), m_aSlots[OrigId].m_Connection.m_Sixup);
 	m_aSlots[OrigId].m_Connection.Reset();
+}
+
+void CNetServer::ResetConnection(int ClientId)
+{
+	m_aSlots[ClientId].m_Connection.Reset();
 }
 
 void CNetServer::IgnoreTimeouts(int ClientId)

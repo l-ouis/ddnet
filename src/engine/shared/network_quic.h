@@ -58,8 +58,11 @@ public:
 	bool Recv(CQuicEvent *pEvent);
 	bool Send(uint64_t PeerId, const void *pData, int DataSize, bool Unreliable);
 	void ClosePeer(uint64_t PeerId, const char *pReason);
-	void SetAcceptConnections(bool Accept);
 	int Rtt(uint64_t PeerId) const;
+	// Milliseconds since the last stream frame or datagram arrived from
+	// the peer, -1 if the peer is unknown. QUIC keep alives do not count,
+	// so this is an application level liveness signal.
+	int64_t MillisSinceReceive(uint64_t PeerId) const;
 };
 
 // Client side of the QUIC transport. The connection to the server uses the
@@ -82,7 +85,10 @@ private:
 	char m_aErrorString[256] = "";
 
 public:
-	void Connect(const char *pAddr, const unsigned char *pServerPubKeyHash, const std::vector<unsigned char> &vCertDer, const std::vector<unsigned char> &vKeyDer, int IdleTimeoutMs);
+	// pBindAddr is the local IP without port to bind to, nullptr/empty for
+	// the unspecified address of the target's address family. An invalid or
+	// family mismatching bind address fails the connect.
+	void Connect(const char *pAddr, const char *pBindAddr, const unsigned char *pServerPubKeyHash, const std::vector<unsigned char> &vCertDer, const std::vector<unsigned char> &vKeyDer, int IdleTimeoutMs);
 	void Disconnect(const char *pReason);
 
 	// Also updates the connection state on CONNECTED/DISCONNECTED events.

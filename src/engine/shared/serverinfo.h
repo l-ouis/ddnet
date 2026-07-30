@@ -47,7 +47,7 @@ public:
 	// 0 if the server has no QUIC endpoint
 	int m_QuicPort;
 	// sha256 of the subject public key info of the QUIC server
-	// certificate, as lowercase hex
+	// certificate, as hex (servers emit lowercase, any case is accepted)
 	char m_aQuicPubKeySha256[65];
 
 	bool operator==(const CServerInfo2 &Other) const;

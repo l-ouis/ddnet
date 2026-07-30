@@ -8,7 +8,7 @@
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -20,9 +20,10 @@ use rustls::pki_types::{CertificateDer, PrivateKeyDer, UnixTime};
 
 use crate::runtime::{install_crypto_provider, runtime};
 
-/// Maximum size of a single chunk in a frame. Larger than the maximum
-/// payload of the legacy protocol, so every game chunk fits.
-pub const MAX_CHUNK_SIZE: usize = 8 * 1024;
+/// Maximum size of a single chunk in a frame. The same bound as
+/// `NET_MAX_PAYLOAD` of the legacy protocol, so both sides enforce the
+/// same protocol limit.
+pub const MAX_CHUNK_SIZE: usize = 1394;
 /// How many chunks may queue up in each direction before the connection is
 /// considered broken.
 const CHUNK_QUEUE_SIZE: usize = 1024;
@@ -68,6 +69,11 @@ pub enum Event {
 struct Peer {
     connection: Connection,
     reliable_tx: tokio::sync::mpsc::Sender<Vec<u8>>,
+    // Milliseconds since `Shared::start` when the last stream frame or
+    // datagram arrived from this peer. QUIC keep alives are transport
+    // level and invisible here, so this is an application level liveness
+    // signal.
+    last_receive: Arc<AtomicU64>,
 }
 
 #[derive(Default)]
@@ -79,7 +85,6 @@ struct PeerTable {
 struct Shared {
     event_tx: tokio::sync::mpsc::Sender<Event>,
     peers: Mutex<PeerTable>,
-    last_receive: AtomicU64,
     start: Instant,
 }
 
@@ -88,19 +93,12 @@ impl Shared {
         Arc::new(Self {
             event_tx,
             peers: Mutex::new(PeerTable::default()),
-            last_receive: AtomicU64::new(0),
             start: Instant::now(),
         })
     }
 
-    fn touch_receive_time(&self) {
-        self.last_receive
-            .store(self.start.elapsed().as_millis() as u64, Ordering::Relaxed);
-    }
-
-    fn millis_since_receive(&self) -> u64 {
-        (self.start.elapsed().as_millis() as u64)
-            .saturating_sub(self.last_receive.load(Ordering::Relaxed))
+    fn now_millis(&self) -> u64 {
+        self.start.elapsed().as_millis() as u64
     }
 }
 
@@ -164,9 +162,11 @@ async fn run_connection(
     mut send_stream: SendStream,
     mut recv_stream: RecvStream,
     mut reliable_rx: tokio::sync::mpsc::Receiver<Vec<u8>>,
+    last_receive: Arc<AtomicU64>,
 ) {
     let stream_shared = shared.clone();
     let stream_connection = connection.clone();
+    let stream_last_receive = last_receive.clone();
     let stream_read = async move {
         loop {
             match read_frame(&mut recv_stream).await {
@@ -175,7 +175,7 @@ async fn run_connection(
                         // Hello frame, only sent to open the stream.
                         continue;
                     }
-                    stream_shared.touch_receive_time();
+                    stream_last_receive.store(stream_shared.now_millis(), Ordering::Relaxed);
                     if stream_shared
                         .event_tx
                         .send(Event::Chunk {
@@ -202,9 +202,10 @@ async fn run_connection(
     };
     let datagram_shared = shared.clone();
     let datagram_connection = connection.clone();
+    let datagram_last_receive = last_receive;
     let datagram_read = async move {
         while let Ok(data) = datagram_connection.read_datagram().await {
-            datagram_shared.touch_receive_time();
+            datagram_last_receive.store(datagram_shared.now_millis(), Ordering::Relaxed);
             // Drop unreliable chunks if the consumer cannot keep up.
             let _ = datagram_shared.event_tx.try_send(Event::Chunk {
                 peer,
@@ -250,12 +251,20 @@ async fn run_connection(
         .await;
 }
 
+/// Registers an established connection as peer. Returns `None` if the
+/// peer limit is already reached; the accept time check alone would
+/// over-admit concurrent handshakes.
 fn register_peer(
     shared: &Shared,
     connection: &Connection,
-) -> (u64, tokio::sync::mpsc::Receiver<Vec<u8>>) {
+    max_peers: usize,
+) -> Option<(u64, tokio::sync::mpsc::Receiver<Vec<u8>>, Arc<AtomicU64>)> {
     let (reliable_tx, reliable_rx) = tokio::sync::mpsc::channel(CHUNK_QUEUE_SIZE);
+    let last_receive = Arc::new(AtomicU64::new(shared.now_millis()));
     let mut table = shared.peers.lock();
+    if table.peers.len() >= max_peers {
+        return None;
+    }
     let peer = table.next_peer;
     table.next_peer += 1;
     table.peers.insert(
@@ -263,9 +272,10 @@ fn register_peer(
         Peer {
             connection: connection.clone(),
             reliable_tx,
+            last_receive: last_receive.clone(),
         },
     );
-    (peer, reliable_rx)
+    Some((peer, reliable_rx, last_receive))
 }
 
 /// Common send/close operations on an established endpoint.
@@ -299,10 +309,11 @@ impl Transport {
             return false;
         };
         if unreliable {
-            // Datagrams that do not fit or cannot be sent right now are
-            // dropped, like unreliable chunks on the legacy transport.
-            let _ = entry.connection.send_datagram(data.to_vec().into());
-            return true;
+            // Datagrams lost by the network are dropped silently, like
+            // unreliable chunks on the legacy transport. Datagrams that can
+            // never be delivered (larger than the path MTU, datagrams
+            // disabled, connection lost) report failure.
+            return entry.connection.send_datagram(data.to_vec().into()).is_ok();
         }
         if entry.reliable_tx.try_send(data.to_vec()).is_err() {
             // The send queue overflowing means the connection is dead or
@@ -336,6 +347,22 @@ impl Transport {
             .peers
             .get(&peer)
             .map_or(0, |entry| entry.connection.rtt().as_millis() as u64)
+    }
+
+    /// Milliseconds since the last stream frame or datagram arrived from
+    /// the peer, -1 if the peer is unknown.
+    fn millis_since_receive(&self, peer: u64) -> i64 {
+        self.shared
+            .peers
+            .lock()
+            .peers
+            .get(&peer)
+            .map_or(-1, |entry| {
+                self.shared
+                    .now_millis()
+                    .saturating_sub(entry.last_receive.load(Ordering::Relaxed))
+                    as i64
+            })
     }
 }
 
@@ -485,11 +512,23 @@ pub struct QuicClient {
     endpoint: Arc<Mutex<Option<Endpoint>>>,
 }
 
+struct ClientConnect {
+    addr: String,
+    bind_addr: String,
+    verification: ServerVerification,
+    cert_der: Vec<u8>,
+    key_pkcs8_der: Vec<u8>,
+    idle_timeout: Duration,
+}
+
 impl QuicClient {
     /// Creates the client and starts connecting to `addr` in the
     /// background. Progress is reported via [`QuicClient::poll_event`].
+    /// `bind_addr` is the local IP without port to bind the endpoint to,
+    /// empty for the unspecified address of the target's address family.
     pub fn connect(
         addr: String,
+        bind_addr: String,
         verification: ServerVerification,
         cert_der: Vec<u8>,
         key_pkcs8_der: Vec<u8>,
@@ -500,18 +539,16 @@ impl QuicClient {
         let shared = transport.shared.clone();
         let endpoint = Arc::new(Mutex::new(None));
         let endpoint_out = endpoint.clone();
+        let connect = ClientConnect {
+            addr,
+            bind_addr,
+            verification,
+            cert_der,
+            key_pkcs8_der,
+            idle_timeout,
+        };
         runtime().spawn(async move {
-            match Self::connect_impl(
-                shared.clone(),
-                endpoint_out,
-                addr,
-                verification,
-                cert_der,
-                key_pkcs8_der,
-                idle_timeout,
-            )
-            .await
-            {
+            match Self::connect_impl(shared.clone(), endpoint_out, connect).await {
                 Ok(()) => {}
                 Err(err) => {
                     let _ = event_tx
@@ -533,12 +570,16 @@ impl QuicClient {
     async fn connect_impl(
         shared: Arc<Shared>,
         endpoint_out: Arc<Mutex<Option<Endpoint>>>,
-        addr: String,
-        verification: ServerVerification,
-        cert_der: Vec<u8>,
-        key_pkcs8_der: Vec<u8>,
-        idle_timeout: Duration,
+        connect: ClientConnect,
     ) -> anyhow::Result<()> {
+        let ClientConnect {
+            addr,
+            bind_addr,
+            verification,
+            cert_der,
+            key_pkcs8_der,
+            idle_timeout,
+        } = connect;
         let remote_addr = tokio::net::lookup_host(&addr)
             .await?
             .next()
@@ -562,12 +603,29 @@ impl QuicClient {
             quinn::ClientConfig::new(Arc::new(QuicClientConfig::try_from(tls_config)?));
         client_config.transport_config(Arc::new(transport_config(idle_timeout)));
 
-        let bind_addr: SocketAddr = if remote_addr.is_ipv4() {
-            "0.0.0.0:0".parse().unwrap()
+        let bind_addr: SocketAddr = if bind_addr.is_empty() {
+            if remote_addr.is_ipv4() {
+                "0.0.0.0:0".parse().unwrap()
+            } else {
+                "[::]:0".parse().unwrap()
+            }
         } else {
-            "[::]:0".parse().unwrap()
+            // The user asked for a specific source address, fail instead
+            // of silently falling back to the default bind.
+            let ip: std::net::IpAddr = bind_addr
+                .parse()
+                .map_err(|_| anyhow!("invalid bind address {}", bind_addr))?;
+            if ip.is_ipv4() != remote_addr.is_ipv4() {
+                return Err(anyhow!(
+                    "bind address {} does not match the address family of {}",
+                    bind_addr,
+                    remote_addr
+                ));
+            }
+            SocketAddr::new(ip, 0)
         };
-        let mut endpoint = Endpoint::client(bind_addr)?;
+        let mut endpoint = Endpoint::client(bind_addr)
+            .map_err(|err| anyhow!("binding {} failed: {}", bind_addr, err))?;
         endpoint.set_default_client_config(client_config);
         *endpoint_out.lock() = Some(endpoint.clone());
 
@@ -578,16 +636,25 @@ impl QuicClient {
         // the peer once data was sent on them.
         write_frame(&mut send_stream, &[]).await?;
 
-        let (peer, reliable_rx) = register_peer(&shared, &connection);
-        shared.touch_receive_time();
-        let _ = shared
+        let (peer, reliable_rx, last_receive) =
+            register_peer(&shared, &connection, usize::MAX).expect("client has no peer limit");
+        if shared
             .event_tx
             .send(Event::Connected {
                 peer,
                 addr: connection.remote_address(),
                 cert_der: Vec::new(),
             })
-            .await;
+            .await
+            .is_err()
+        {
+            // The C++ side dropped the client while the connect was still
+            // in flight, do not keep an orphaned connection to the server.
+            shared.peers.lock().peers.remove(&peer);
+            connection.close(VarInt::from_u32(CLOSE_CODE), b"");
+            endpoint.close(VarInt::from_u32(CLOSE_CODE), b"");
+            return Ok(());
+        }
         run_connection(
             shared,
             peer,
@@ -595,6 +662,7 @@ impl QuicClient {
             send_stream,
             recv_stream,
             reliable_rx,
+            last_receive,
         )
         .await;
         Ok(())
@@ -619,9 +687,10 @@ impl QuicClient {
         }
     }
 
-    /// Milliseconds since the last time data arrived from the server.
+    /// Milliseconds since the last time data arrived from the server, 0
+    /// while the connection is not established.
     pub fn millis_since_receive(&self) -> u64 {
-        self.transport.shared.millis_since_receive()
+        self.transport.millis_since_receive(0).max(0) as u64
     }
 
     /// Current smoothed round trip time to the server, in milliseconds.
@@ -639,14 +708,15 @@ impl Drop for QuicClient {
 /// Server side of the QUIC transport.
 pub struct QuicServer {
     transport: Transport,
-    endpoint: Endpoint,
-    accept_connections: Arc<AtomicBool>,
+    // None if opening the endpoint failed, all methods no-op then.
+    endpoint: Option<Endpoint>,
     error: Option<String>,
 }
 
 impl QuicServer {
     /// Opens a QUIC endpoint on `bind_addr` using the given self signed
-    /// certificate as TLS identity.
+    /// certificate as TLS identity. On failure the server is created in an
+    /// inert error state, see [`QuicServer::error`].
     pub fn new(
         bind_addr: &str,
         cert_der: Vec<u8>,
@@ -656,7 +726,6 @@ impl QuicServer {
     ) -> Self {
         install_crypto_provider();
         let (transport, _) = Transport::new();
-        let accept_connections = Arc::new(AtomicBool::new(true));
         match Self::open_endpoint(
             &transport,
             bind_addr,
@@ -664,19 +733,15 @@ impl QuicServer {
             key_pkcs8_der,
             idle_timeout,
             max_peers,
-            accept_connections.clone(),
         ) {
             Ok(endpoint) => Self {
                 transport,
-                endpoint,
-                accept_connections,
+                endpoint: Some(endpoint),
                 error: None,
             },
             Err(err) => Self {
                 transport,
-                endpoint: Endpoint::client("127.0.0.1:0".parse().unwrap())
-                    .expect("local endpoint creation cannot fail"),
-                accept_connections,
+                endpoint: None,
                 error: Some(err.to_string()),
             },
         }
@@ -689,7 +754,6 @@ impl QuicServer {
         key_pkcs8_der: Vec<u8>,
         idle_timeout: Duration,
         max_peers: usize,
-        accept_connections: Arc<AtomicBool>,
     ) -> anyhow::Result<Endpoint> {
         let provider = Arc::new(rustls::crypto::ring::default_provider());
         let client_verifier = Arc::new(AcceptAnyClientVerifier {
@@ -716,9 +780,7 @@ impl QuicServer {
         let accept_endpoint = endpoint.clone();
         runtime().spawn(async move {
             while let Some(incoming) = accept_endpoint.accept().await {
-                if !accept_connections.load(Ordering::Relaxed)
-                    || shared.peers.lock().peers.len() >= max_peers
-                {
+                if shared.peers.lock().peers.len() >= max_peers {
                     incoming.refuse();
                     continue;
                 }
@@ -737,8 +799,12 @@ impl QuicServer {
                     let Ok((send_stream, recv_stream)) = connection.accept_bi().await else {
                         return;
                     };
-                    let (peer, reliable_rx) = register_peer(&shared, &connection);
-                    shared.touch_receive_time();
+                    let Some((peer, reliable_rx, last_receive)) =
+                        register_peer(&shared, &connection, max_peers)
+                    else {
+                        connection.close(VarInt::from_u32(CLOSE_CODE), b"This server is full");
+                        return;
+                    };
                     if shared
                         .event_tx
                         .send(Event::Connected {
@@ -758,6 +824,7 @@ impl QuicServer {
                         send_stream,
                         recv_stream,
                         reliable_rx,
+                        last_receive,
                     )
                     .await;
                 });
@@ -773,12 +840,10 @@ impl QuicServer {
 
     /// The port the endpoint is bound to, 0 on error.
     pub fn port(&self) -> u16 {
-        self.endpoint.local_addr().map_or(0, |addr| addr.port())
-    }
-
-    /// Whether new connections are currently accepted.
-    pub fn set_accept_connections(&self, accept: bool) {
-        self.accept_connections.store(accept, Ordering::Relaxed);
+        self.endpoint
+            .as_ref()
+            .and_then(|endpoint| endpoint.local_addr().ok())
+            .map_or(0, |addr| addr.port())
     }
 
     /// Polls the next transport event, if any.
@@ -801,12 +866,19 @@ impl QuicServer {
     pub fn rtt_millis(&self, peer: u64) -> u64 {
         self.transport.rtt_millis(peer)
     }
+
+    /// Milliseconds since the last stream frame or datagram arrived from
+    /// the peer, -1 if the peer is unknown.
+    pub fn millis_since_receive(&self, peer: u64) -> i64 {
+        self.transport.millis_since_receive(peer)
+    }
 }
 
 impl Drop for QuicServer {
     fn drop(&mut self) {
-        self.endpoint
-            .close(VarInt::from_u32(CLOSE_CODE), b"shutdown");
+        if let Some(endpoint) = &self.endpoint {
+            endpoint.close(VarInt::from_u32(CLOSE_CODE), b"shutdown");
+        }
     }
 }
 
@@ -872,6 +944,7 @@ mod tests {
         assert!(server.error().is_none(), "{:?}", server.error());
         let mut client = QuicClient::connect(
             format!("127.0.0.1:{}", server.port()),
+            String::new(),
             ServerVerification::PubKeyHash(server_identity.public_key_hash),
             client_identity.cert_der.clone(),
             client_identity.key_der.clone(),
@@ -908,6 +981,9 @@ mod tests {
             panic!("expected chunk, got {:?}", event);
         };
         assert_eq!(data, b"hello client");
+
+        assert!(server.millis_since_receive(peer) >= 0);
+        assert_eq!(server.millis_since_receive(peer + 1), -1);
     }
 
     #[test]
@@ -981,6 +1057,7 @@ mod tests {
         );
         let mut client = QuicClient::connect(
             format!("127.0.0.1:{}", server.port()),
+            String::new(),
             ServerVerification::PubKeyHash([0x11; 32]),
             client_identity.cert_der,
             client_identity.key_der,
@@ -991,8 +1068,111 @@ mod tests {
     }
 
     #[test]
+    fn explicit_bind_addr() {
+        let server_identity = test_identity();
+        let client_identity = test_identity();
+        let mut server = QuicServer::new(
+            "127.0.0.1:0",
+            server_identity.cert_der.clone(),
+            server_identity.key_der.clone(),
+            Duration::from_secs(5),
+            16,
+        );
+        assert!(server.error().is_none(), "{:?}", server.error());
+        let mut client = QuicClient::connect(
+            format!("127.0.0.1:{}", server.port()),
+            "127.0.0.1".to_owned(),
+            ServerVerification::PubKeyHash(server_identity.public_key_hash),
+            client_identity.cert_der.clone(),
+            client_identity.key_der.clone(),
+            Duration::from_secs(5),
+        );
+        let event = wait_event(&mut || client.poll_event());
+        assert!(matches!(event, Event::Connected { .. }), "{:?}", event);
+        let event = wait_event(&mut || server.poll_event());
+        let Event::Connected { addr, .. } = event else {
+            panic!("expected connect, got {:?}", event);
+        };
+        assert!(addr.ip().is_loopback());
+
+        // Address family mismatches and unparsable bind addresses fail the
+        // connect instead of silently falling back to the default bind.
+        for bind_addr in ["::1", "not an ip"] {
+            let mut client = QuicClient::connect(
+                format!("127.0.0.1:{}", server.port()),
+                bind_addr.to_owned(),
+                ServerVerification::PubKeyHash(server_identity.public_key_hash),
+                client_identity.cert_der.clone(),
+                client_identity.key_der.clone(),
+                Duration::from_secs(5),
+            );
+            let event = wait_event(&mut || client.poll_event());
+            let Event::Disconnected { reason, .. } = event else {
+                panic!("expected disconnect, got {:?}", event);
+            };
+            assert!(reason.contains("bind address"), "{}", reason);
+        }
+    }
+
+    #[test]
     fn oversized_chunk_rejected() {
         let (_server, client, _, _) = connected_pair();
         assert!(!client.send(&vec![0; MAX_CHUNK_SIZE + 1], false));
+    }
+
+    #[test]
+    fn endpoint_open_failure_no_panic() {
+        let identity = test_identity();
+        let first = QuicServer::new(
+            "127.0.0.1:0",
+            identity.cert_der.clone(),
+            identity.key_der.clone(),
+            Duration::from_secs(5),
+            16,
+        );
+        assert!(first.error().is_none(), "{:?}", first.error());
+        // The port is already bound, opening must yield an inert error
+        // state instead of a panic.
+        let mut second = QuicServer::new(
+            &format!("127.0.0.1:{}", first.port()),
+            identity.cert_der.clone(),
+            identity.key_der.clone(),
+            Duration::from_secs(5),
+            16,
+        );
+        assert!(second.error().is_some());
+        assert_eq!(second.port(), 0);
+        assert!(second.poll_event().is_none());
+        assert!(!second.send(0, b"data", false));
+        second.close_peer(0, "reason");
+        assert_eq!(second.millis_since_receive(0), -1);
+        assert_eq!(second.rtt_millis(0), 0);
+    }
+
+    #[test]
+    fn send_queue_overflow_closes_connection() {
+        let (mut server, client, _, _) = connected_pair();
+        // The server does not poll, so backpressure eventually fills the
+        // reliable send queue of the client.
+        let data = vec![0; MAX_CHUNK_SIZE];
+        let start = Instant::now();
+        let mut overflowed = false;
+        while start.elapsed() < TIMEOUT {
+            if !client.send(&data, false) {
+                overflowed = true;
+                break;
+            }
+        }
+        assert!(overflowed, "send queue never overflowed");
+        loop {
+            match wait_event(&mut || server.poll_event()) {
+                Event::Chunk { .. } => {}
+                Event::Disconnected { reason, .. } => {
+                    assert_eq!(reason, "send queue overflow");
+                    break;
+                }
+                event => panic!("expected chunk or disconnect, got {:?}", event),
+            }
+        }
     }
 }

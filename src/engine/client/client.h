@@ -81,10 +81,16 @@ class CClient : public IClient, public CDemoPlayer::IListener
 
 	CNetClient m_aNetClient[NUM_CONNS];
 	CQuicNetClient m_aQuicNetClient[NUM_CONNS];
-	bool m_aConnViaQuic[NUM_CONNS] = {false, false, false};
+	// Which transport a connection uses. Intentionally kept set after a
+	// disconnect, so that NetErrorString and ServerAddress still refer
+	// to the QUIC session until the next connect chooses a transport.
+	bool m_aConnViaQuic[NUM_CONNS] = {};
 	CAccountsManager m_Accounts;
 	// pending QUIC connect, waiting for the account certificate
 	bool m_QuicConnectPending = false;
+	// start of the current QUIC connect phase (certificate wait or
+	// handshake), to bound the connect before falling back to UDP
+	int64_t m_QuicConnectStartTime = 0;
 	char m_aQuicConnectAddr[NETADDR_MAXSTRSIZE + 8] = "";
 	unsigned char m_aQuicServerPubKeyHash[32] = {};
 	NETADDR m_QuicServerAddr = NETADDR_ZEROED;
@@ -426,19 +432,27 @@ public:
 	// Connection state of a connection, over whichever transport it uses.
 	// While a QUIC connect is pending on the certificate, the connection
 	// counts as connecting.
-	int NetState(int Conn);
+	int NetState(int Conn) const;
 	const char *NetErrorString(int Conn) const;
 	// Whether the given addresses belong to a server that advertised a
-	// QUIC endpoint via the server browser. On success the QUIC connect
-	// address and certificate public key hash are stored.
-	bool PrepareQuicConnect(const NETADDR *pAddrs, int NumAddrs);
+	// QUIC endpoint via the server browser or the connect_quic command.
+	// On success the QUIC connect address and certificate public key
+	// hash are stored.
+	bool PrepareQuicConnect(const NETADDR *pAddrs, int NumAddrs, int ForcePort, const char *pForceHashHex);
 	// Starts the QUIC connection once the account certificate is ready.
 	void QuicConnectWithCert();
 	// Falls back to the legacy transport after a failed QUIC connect.
 	void QuicFallback(const char *pError);
+	// Resolves the configured bindaddr to a bare IP for the QUIC
+	// transport, empty if no bindaddr is configured.
+	void QuicBindAddr(char *pBuf, size_t BufSize) const;
 
 	IAccounts *Accounts() override { return &m_Accounts; }
-	bool ConnectedViaQuic() const override { return m_aConnViaQuic[CONN_MAIN]; }
+	bool ConnectedViaQuic() const override
+	{
+		return m_aConnViaQuic[CONN_MAIN] &&
+		       (m_QuicConnectPending || m_aQuicNetClient[CONN_MAIN].State() == CQuicNetClient::EState::CONNECTING || m_aQuicNetClient[CONN_MAIN].State() == CQuicNetClient::EState::ONLINE);
+	}
 
 	void OnDemoPlayerSnapshot(void *pData, int Size) override;
 	void OnDemoPlayerMessage(void *pData, int Size) override;

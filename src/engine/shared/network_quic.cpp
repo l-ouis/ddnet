@@ -43,6 +43,9 @@ void CQuicEvent::FromBridge(const accounts::SQuicEvent &Event)
 	else if(m_Type == EType::DISCONNECTED)
 	{
 		str_copy(m_aReason, std::string(Event.m_Reason).c_str());
+		// The reason may be remote supplied, don't let control characters
+		// reach logs or popups, like the legacy transport.
+		str_sanitize_cc(m_aReason);
 		m_Remote = Event.m_Remote;
 	}
 }
@@ -109,24 +112,22 @@ void CQuicNetServer::ClosePeer(uint64_t PeerId, const char *pReason)
 	}
 }
 
-void CQuicNetServer::SetAcceptConnections(bool Accept)
-{
-	if(m_pServer.has_value())
-	{
-		(*m_pServer)->SetAcceptConnections(Accept);
-	}
-}
-
 int CQuicNetServer::Rtt(uint64_t PeerId) const
 {
 	return m_pServer.has_value() ? (*m_pServer)->RttMillis(PeerId) : 0;
 }
 
-void CQuicNetClient::Connect(const char *pAddr, const unsigned char *pServerPubKeyHash, const std::vector<unsigned char> &vCertDer, const std::vector<unsigned char> &vKeyDer, int IdleTimeoutMs)
+int64_t CQuicNetServer::MillisSinceReceive(uint64_t PeerId) const
+{
+	return m_pServer.has_value() ? (*m_pServer)->MillisSinceReceive(PeerId) : -1;
+}
+
+void CQuicNetClient::Connect(const char *pAddr, const char *pBindAddr, const unsigned char *pServerPubKeyHash, const std::vector<unsigned char> &vCertDer, const std::vector<unsigned char> &vKeyDer, int IdleTimeoutMs)
 {
 	Disconnect("");
 	m_pClient.emplace(accounts::CreateQuicClient(
 		pAddr,
+		pBindAddr == nullptr ? "" : pBindAddr,
 		rust::Slice<const uint8_t>(pServerPubKeyHash, 32),
 		rust::Slice<const uint8_t>(vCertDer.data(), vCertDer.size()),
 		rust::Slice<const uint8_t>(vKeyDer.data(), vKeyDer.size()),

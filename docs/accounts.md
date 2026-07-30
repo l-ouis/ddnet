@@ -61,14 +61,29 @@ changes.
 - The client automatically prefers QUIC when the server browser info of the
   target server advertises it and `cl_quic` is enabled (default). If the
   QUIC connection cannot be established, it falls back to the legacy
-  transport. `connect_quic <host> <port> <cert-sha256-hex>` connects to
-  servers that are not in the browser (e.g. LAN).
+  transport; both the certificate wait and the QUIC handshake are bounded
+  at 5 seconds each, so a stale advert costs seconds, not the idle timeout.
+  The fallback (and a login that degraded to anonymous) is shown to the
+  player as a warning popup, and the connection log line states the
+  transport and login state. `connect_quic <host> <port> <cert-sha256-hex>`
+  connects to servers that are not in the browser (e.g. LAN); invalid
+  arguments are rejected instead of silently downgrading to UDP. QUIC
+  honors `bindaddr` (as a bare IP of the target's address family), but not
+  `cl_port` (the QUIC source port is ephemeral).
 - Game traffic maps onto QUIC as follows: vital chunks go over a single
   bidirectional stream with 2 byte length prefixed frames (QUIC provides
   reliability and ordering); non-vital chunks (snapshots, inputs) are sent
-  as unreliable QUIC datagrams. Connless packets (server info, master
-  pings) stay on the legacy UDP socket.
-- Dummy connects open a second QUIC connection with the same certificate.
+  as unreliable QUIC datagrams. Chunks are bounded by the same maximum
+  payload as the legacy protocol on both sides. Connless packets (server
+  info, master pings) stay on the legacy UDP socket.
+- Dummy connects open a second QUIC connection with the same certificate
+  (kept fresh by the background certificate refresh).
+- Liveness and timeouts match the legacy transport: the server drops QUIC
+  clients that sent no game data for `conn_timeout` seconds (QUIC
+  keep-alives deliberately do not count), and timeout protection works
+  across transports — a timed out player keeps their slot for
+  `conn_timeout_protection` seconds and `/timeout` reclaims it, whether
+  either connection is QUIC or legacy.
 
 The QUIC/TLS implementation is quinn + rustls in the Rust crate described
 below, not a new C++ TLS stack.
@@ -99,7 +114,13 @@ no callbacks cross the FFI boundary.
 - `game_server.rs`: downloads and caches the account server signing
   certificates, resolves `user_id_from_cert` (rejecting expired account
   certificates), and auto-registers accounts in a per-server sqlite
-  database (`accounts.sqlite` in the server storage).
+  database (`accounts.sqlite` in the server storage). Initialization runs
+  in the background and is retried until it succeeds (20 second timeout
+  per attempt), so a server that boots while the account server is down
+  starts resolving accounts as soon as it comes back; logins arriving in
+  the meantime are queued. If the database registration fails, the client
+  is reported as anonymous rather than with an account id that has no
+  database row.
 - `identity.rs`: the persistent server TLS identity.
 
 ### C++ engine
@@ -111,7 +132,12 @@ no callbacks cross the FFI boundary.
   account manager (implements the `IAccounts` interface from
   `src/engine/accounts.h` that the game code uses). It also owns the
   certificate used for connecting and refreshes it in the background while
-  playing.
+  playing (10 minute expiry margin); certificate events are engine
+  internal and never surface through `IAccounts::FetchEvents`. Events with
+  request id 0 are unsolicited notifications, currently only the removal
+  of a profile whose session became invalid. Errors are classified
+  (connection failure, disk failure, rate limit, VPN ban) so the UI can
+  show localized, actionable messages.
 - `src/engine/client/client.cpp`: transport selection on connect (server
   browser lookup → request certificate → QUIC connect → UDP fallback),
   chunk routing per connection, connection state unification
@@ -122,8 +148,11 @@ no callbacks cross the FFI boundary.
   through the normal `NewClientCallback`/`ProcessClientPacket`/
   `DelClientCallback` paths. The account resolves asynchronously shortly
   after connect onto `CServer::CClient::m_AccountId`, readable via
-  `IServer::ClientAccountId()` (0 = not logged in). Binding the account id
-  into the ranks database is a follow-up.
+  `IServer::ClientAccountId()` (0 = not logged in); the sha256 fingerprint
+  of the client key — the stable identity of accountless clients — is
+  available via `IServer::ClientAccountKeyHash()`. Per-IP limits and the
+  connect rate limit (`sv_connlimit`) are shared between both transports.
+  Binding the account id into the ranks database is a follow-up.
 
 ### Account UI
 
@@ -152,9 +181,12 @@ because the Steam integration does not expose auth session tickets.
 | --- | --- | --- |
 | `cl_account_server` | `https://pg.ddnet.org:5555/` | Account server URL of the client (read at startup) |
 | `cl_quic` | `1` | Prefer QUIC when the server advertises it |
-| `sv_quic` | `0` | Open the QUIC endpoint |
-| `sv_quic_port` | `0` | QUIC UDP port, 0 = pick a free one |
-| `sv_account_server` | `https://pg.ddnet.org:5555/` | Account server whose certificates the game server accepts, empty disables account resolution |
+| `sv_quic` | `0` | Open the QUIC endpoint (read at startup) |
+| `sv_quic_port` | `0` | QUIC UDP port, 0 = pick a free one (read at startup) |
+| `sv_account_server` | `https://pg.ddnet.org:5555/` | Account server whose certificates the game server accepts, empty disables account resolution (read at startup) |
+
+The existing `conn_timeout` and `conn_timeout_protection` apply to QUIC
+clients the same way they apply to legacy clients.
 
 ## Security notes
 
@@ -169,17 +201,21 @@ because the Steam integration does not expose auth session tickets.
   intercepted even without a CA.
 - Certificate lifetime is 1 hour, expired account certificates degrade to
   the anonymous key identity on the game server.
-- Per-IP connection limits and bans apply to QUIC clients using their real
-  remote address. A mixed transport client counts against the same limit,
-  checked across both transports on the QUIC accept path.
+- Per-IP connection limits, the connect rate limit and bans apply to QUIC
+  clients using their real remote address. A mixed transport client counts
+  against the same limits, checked across both transports on both accept
+  paths.
 
 ## Testing
 
 - `cargo test -p ddnet-accounts-bridge`: transport unit tests (chunk
   roundtrips, datagram delivery, pinning failure, disconnect reasons,
-  identity persistence).
-- `testrunner --gtest_filter='NetworkQuic.*'`: the same through the C++
-  wrappers and generated glue.
+  endpoint open failure, send queue overflow, explicit bind addresses,
+  certificate expiry, error classification).
+- `testrunner --gtest_filter='NetworkQuic.*'`: chunk roundtrips, pinning
+  failure, disconnect reasons and identity persistence through the C++
+  wrappers and generated glue; `--gtest_filter='ServerInfo.*'` covers the
+  QUIC server info advert parsing.
 - Live end to end tests (`cargo test -p ddnet-accounts-bridge -- --ignored`)
   run against a locally running account server and need:
   - MariaDB and [mailpit](https://github.com/axllent/mailpit) (receives the
@@ -193,3 +229,21 @@ because the Steam integration does not expose auth session tickets.
   `e2e_live` exercises token → login → sign → game server resolution →
   account info → logout; `e2e_cpp_server_login` connects to a running
   `DDNet-Server` with `sv_quic 1` over QUIC as a logged in account.
+
+## Known limitations and follow-ups
+
+- Binding the account id (and the key fingerprint of accountless clients)
+  into the ranks database is the next step; `IServer::ClientAccountId()`
+  and `IServer::ClientAccountKeyHash()` provide the data.
+- Steam login is blocked on auth session tickets in the Steam flat API.
+- The debug net stats (bandwidth graphs) do not count QUIC traffic yet.
+- Logging out requires reaching the account server (upstream `Profiles`
+  has no local-only session removal), and a single unreadable profile
+  directory fails the whole profile load — both need upstream changes.
+- Dependency weight: the upstream `ddnet-account-client-reqwest` crate
+  enables reqwest's default TLS backend, which pulls in aws-lc-rs next to
+  the ring backend used by everything else; deduplicating needs an
+  upstream feature change. The bridge also bundles its own sqlite via
+  sqlx next to the sqlite3 the C++ server links. Whether the accounts
+  feature needs a build time off switch for packagers is an open question
+  for upstreaming.

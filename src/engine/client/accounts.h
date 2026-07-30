@@ -19,12 +19,17 @@ class CAccountsManager : public IAccounts
 	std::optional<rust::Box<accounts::CAccountsClient>> m_pClient;
 	std::vector<CAccountEvent> m_vEvents;
 
-	// certificate for connecting to game servers
+	// Certificate for connecting to game servers. All CERT_AND_KEY
+	// requests are issued internally, their completions never reach
+	// FetchEvents(). m_CertRequestId is the latest pending request,
+	// completions of superseded requests are dropped.
 	uint64_t m_CertRequestId = 0;
 	bool m_CertReady = false;
+	bool m_CertFailed = false;
 	std::vector<unsigned char> m_vCertDer;
 	std::vector<unsigned char> m_vKeyDer;
 	char m_aCertWarning[256] = "";
+	char m_aCertError[256] = "";
 
 	int64_t m_LastCertRefreshTime = 0;
 
@@ -57,14 +62,20 @@ public:
 	std::vector<CAccountEvent> FetchEvents() override;
 
 	// Requests the certificate and session key used to connect to game
-	// servers. Completion is checked with ConnectCertReady().
+	// servers. Completion is checked with ConnectCertReady() and
+	// ConnectCertFailed().
 	void RequestConnectCert();
 	bool ConnectCertReady() const { return m_CertReady; }
+	// Whether the last certificate request failed without a usable
+	// certificate, see CertError().
+	bool ConnectCertFailed() const { return m_CertFailed; }
 	const std::vector<unsigned char> &ConnectCertDer() const { return m_vCertDer; }
 	const std::vector<unsigned char> &ConnectKeyDer() const { return m_vKeyDer; }
 	// Warning of the last certificate request, e.g. that the account
 	// server was unreachable and an anonymous certificate is used.
 	const char *CertWarning() const { return m_aCertWarning; }
+	// Error of the last failed certificate request.
+	const char *CertError() const { return m_aCertError; }
 
 	// Refreshes the account certificate in the background if it is about
 	// to expire. Called regularly, cheap if nothing is to do.

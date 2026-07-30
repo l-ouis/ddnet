@@ -754,6 +754,22 @@ int64_t CServer::ClientAccountId(int ClientId) const
 	return m_aClients[ClientId].m_AccountId;
 }
 
+const unsigned char *CServer::ClientAccountKeyHash(int ClientId) const
+{
+	if(ClientId < 0 || ClientId >= MAX_CLIENTS || m_aClients[ClientId].m_State == CClient::STATE_EMPTY)
+	{
+		return nullptr;
+	}
+	for(const unsigned char HashByte : m_aClients[ClientId].m_aAccountKeyHash)
+	{
+		if(HashByte != 0)
+		{
+			return m_aClients[ClientId].m_aAccountKeyHash;
+		}
+	}
+	return nullptr;
+}
+
 const std::array<char, NETADDR_MAXSTRSIZE> &CServer::ClientAddrStringImpl(int ClientId, bool IncludePort) const
 {
 	dbg_assert(ClientId >= 0 && ClientId < MAX_CLIENTS, "Invalid ClientId: %d", ClientId);
@@ -1231,6 +1247,21 @@ int CServer::NewClientNoAuthCallback(int ClientId, void *pUser)
 	return 0;
 }
 
+int CServer::NumQuicClientsWithAddrCallback(const NETADDR *pAddr, void *pUser)
+{
+	CServer *pThis = (CServer *)pUser;
+	int NumClients = 0;
+	for(const CClient &Client : pThis->m_aClients)
+	{
+		if(Client.m_State != CClient::STATE_EMPTY && !Client.m_DebugDummy && Client.m_Quic &&
+			net_addr_comp_noport(pAddr, &Client.m_QuicAddr) == 0)
+		{
+			NumClients++;
+		}
+	}
+	return NumClients;
+}
+
 int CServer::NewClientCallback(int ClientId, void *pUser, bool Sixup)
 {
 	CServer *pThis = (CServer *)pUser;
@@ -1399,7 +1430,16 @@ void CServer::InitQuic()
 	char aBindAddr[NETADDR_MAXSTRSIZE + 16];
 	if(Config()->m_Bindaddr[0] != '\0')
 	{
-		str_format(aBindAddr, sizeof(aBindAddr), "%s:%d", Config()->m_Bindaddr, Config()->m_SvQuicPort);
+		// Resolve like the legacy socket setup, so hostnames and
+		// unbracketed IPv6 literals work identically.
+		NETADDR BindAddr;
+		if(net_host_lookup(Config()->m_Bindaddr, &BindAddr, NETTYPE_ALL) != 0)
+		{
+			log_error("server/quic", "The configured bindaddr '%s' cannot be resolved, QUIC disabled", Config()->m_Bindaddr);
+			return;
+		}
+		BindAddr.port = Config()->m_SvQuicPort;
+		net_addr_str(&BindAddr, aBindAddr, sizeof(aBindAddr), true);
 	}
 	else if(Config()->m_SvIpv4Only)
 	{
@@ -1439,10 +1479,25 @@ void CServer::InitQuic()
 
 void CServer::QuicNewClient(const CQuicEvent &Event)
 {
+	// The bridge delivers the peer address as string, reject peers whose
+	// address could not be parsed instead of admitting them with a zeroed
+	// address that would bypass address based checks.
+	if(Event.m_Addr.type == NETTYPE_INVALID)
+	{
+		m_QuicNetServer.ClosePeer(Event.m_PeerId, "Invalid peer address");
+		return;
+	}
+
 	char aError[256];
 	if(m_ServerBan.IsBanned(&Event.m_Addr, aError, sizeof(aError)))
 	{
 		m_QuicNetServer.ClosePeer(Event.m_PeerId, aError);
+		return;
+	}
+
+	if(m_NetServer.Connlimit(Event.m_Addr))
+	{
+		m_QuicNetServer.ClosePeer(Event.m_PeerId, "Too many connections in a short time");
 		return;
 	}
 
@@ -1482,7 +1537,12 @@ void CServer::QuicNewClient(const CQuicEvent &Event)
 	m_aClients[ClientId].m_QuicAddr = Event.m_Addr;
 	net_addr_str(&Event.m_Addr, m_aClients[ClientId].m_aQuicAddrString.data(), NETADDR_MAXSTRSIZE, true);
 	net_addr_str(&Event.m_Addr, m_aClients[ClientId].m_aQuicAddrStringNoPort.data(), NETADDR_MAXSTRSIZE, false);
+	m_aClients[ClientId].m_QuicTimeoutProtected = false;
+	m_aClients[ClientId].m_QuicErrored = false;
+	m_aClients[ClientId].m_QuicErrorTime = 0;
+	m_aClients[ClientId].m_aQuicErrorString[0] = '\0';
 	m_aClients[ClientId].m_AccountId = 0;
+	mem_zero(m_aClients[ClientId].m_aAccountKeyHash, sizeof(m_aClients[ClientId].m_aAccountKeyHash));
 	m_QuicPeerToClientId[Event.m_PeerId] = ClientId;
 	m_NetServer.SetSlotReserved(ClientId, true);
 
@@ -1500,12 +1560,37 @@ void CServer::QuicNewClient(const CQuicEvent &Event)
 void CServer::QuicDeleteClient(int ClientId, const char *pReason)
 {
 	DelClientCallback(ClientId, pReason, this);
+	ResetQuicClient(ClientId);
+}
+
+void CServer::ResetQuicClient(int ClientId)
+{
 	m_QuicPeerToClientId.erase(m_aClients[ClientId].m_QuicPeerId);
 	std::erase_if(m_QuicLoginToClientId, [ClientId](const auto &Login) { return Login.second == ClientId; });
 	m_aClients[ClientId].m_Quic = false;
 	m_aClients[ClientId].m_QuicPeerId = 0;
+	m_aClients[ClientId].m_QuicAddr = NETADDR_ZEROED;
+	m_aClients[ClientId].m_aQuicAddrString = {};
+	m_aClients[ClientId].m_aQuicAddrStringNoPort = {};
+	m_aClients[ClientId].m_QuicTimeoutProtected = false;
+	m_aClients[ClientId].m_QuicErrored = false;
+	m_aClients[ClientId].m_QuicErrorTime = 0;
+	m_aClients[ClientId].m_aQuicErrorString[0] = '\0';
 	m_aClients[ClientId].m_AccountId = 0;
+	mem_zero(m_aClients[ClientId].m_aAccountKeyHash, sizeof(m_aClients[ClientId].m_aAccountKeyHash));
 	m_NetServer.SetSlotReserved(ClientId, false);
+}
+
+void CServer::QuicClientErrored(int ClientId, const char *pReason)
+{
+	// The peer is gone, but the slot stays occupied (and reserved in the
+	// legacy net server) so the player can reclaim it with /timeout,
+	// mirroring the legacy timeout protection.
+	log_info("server/quic", "quic client errored, waiting for timeout protection reclaim. cid=%d addr=<{%s}> reason='%s'", ClientId, ClientAddrString(ClientId, true), pReason);
+	m_QuicPeerToClientId.erase(m_aClients[ClientId].m_QuicPeerId);
+	m_aClients[ClientId].m_QuicErrored = true;
+	m_aClients[ClientId].m_QuicErrorTime = time_get();
+	str_copy(m_aClients[ClientId].m_aQuicErrorString, pReason);
 }
 
 void CServer::UpdateQuic()
@@ -1554,7 +1639,53 @@ void CServer::UpdateQuic()
 		}
 		else if(Event.m_Type == CQuicEvent::EType::DISCONNECTED)
 		{
-			QuicDeleteClient(ClientId, Event.m_aReason[0] != '\0' ? Event.m_aReason : "Disconnected");
+			const char *pReason = Event.m_aReason[0] != '\0' ? Event.m_aReason : "Disconnected";
+			// A connection loss of a timeout protected ingame client
+			// keeps the slot occupied so the player can reclaim it via
+			// /timeout, like the legacy timeout protection. Deliberate
+			// remote closes drop the client like a legacy close message.
+			const bool TimeoutSituation = Event.m_Remote && str_comp(Event.m_aReason, "Timeout") == 0;
+			if(TimeoutSituation && m_aClients[ClientId].m_State == CClient::STATE_INGAME && m_aClients[ClientId].m_QuicTimeoutProtected)
+			{
+				QuicClientErrored(ClientId, pReason);
+			}
+			else
+			{
+				QuicDeleteClient(ClientId, pReason);
+			}
+		}
+	}
+
+	// Application level liveness: QUIC keep alives are not counted by
+	// MillisSinceReceive, so this mirrors the legacy conn_timeout that a
+	// silent legacy connection runs into once its keep alives stop. It also
+	// bounds handshake-only connections that never sent any game message.
+	for(int ClientId = 0; ClientId < MAX_CLIENTS; ClientId++)
+	{
+		CClient &Client = m_aClients[ClientId];
+		if(!Client.m_Quic || Client.m_State == CClient::STATE_EMPTY)
+			continue;
+		if(Client.m_QuicErrored)
+		{
+			// Legacy connections keep an errored timeout protected slot
+			// for conn_timeout_protection seconds before giving up.
+			if(time_get() - Client.m_QuicErrorTime > time_freq() * Config()->m_ConnTimeoutProtection)
+			{
+				QuicDeleteClient(ClientId, "Timeout Protection over");
+			}
+			continue;
+		}
+		if(m_QuicNetServer.MillisSinceReceive(Client.m_QuicPeerId) > (int64_t)Config()->m_ConnTimeout * 1000)
+		{
+			m_QuicNetServer.ClosePeer(Client.m_QuicPeerId, "Timeout");
+			if(Client.m_State == CClient::STATE_INGAME && Client.m_QuicTimeoutProtected)
+			{
+				QuicClientErrored(ClientId, "Timeout");
+			}
+			else
+			{
+				QuicDeleteClient(ClientId, "Timeout");
+			}
 		}
 	}
 
@@ -1574,7 +1705,23 @@ void CServer::UpdateQuic()
 				continue;
 			if(!Login.m_Error.empty())
 			{
-				log_error("server/accounts", "account resolution failed. cid=%d error='%s'", ClientId, std::string(Login.m_Error).c_str());
+				const std::string Error = std::string(Login.m_Error);
+				if(Error == "account support still initializing")
+				{
+					// Not an error of this particular login, the account
+					// server connection is still being established in the
+					// background; the client stays anonymous like on a
+					// server without account support.
+					log_debug("server/accounts", "account not resolved, account support still initializing. cid=%d", ClientId);
+				}
+				else
+				{
+					log_error("server/accounts", "account resolution failed. cid=%d error='%s'", ClientId, Error.c_str());
+				}
+			}
+			if(Login.m_aPublicKeyHash.size() == sizeof(m_aClients[ClientId].m_aAccountKeyHash))
+			{
+				mem_copy(m_aClients[ClientId].m_aAccountKeyHash, Login.m_aPublicKeyHash.data(), sizeof(m_aClients[ClientId].m_aAccountKeyHash));
 			}
 			if(Login.m_AccountId != 0)
 			{
@@ -2295,7 +2442,7 @@ void CServer::OnNetMsgReady(int ClientId)
 			"player is ready. ClientId=%d addr=<{%s}> secure=%s",
 			ClientId,
 			ClientAddrString(ClientId, true),
-			m_NetServer.HasSecurityToken(ClientId) ? "yes" : "no");
+			ClientSecure(ClientId) ? "yes" : "no");
 
 		void *pPersistentData = nullptr;
 		if(m_aClients[ClientId].m_HasPersistentData)
@@ -3471,6 +3618,9 @@ int CServer::Run()
 	m_pRegister = CreateRegister(&g_Config, m_pConsole, m_pEngine, m_pHttp, g_Config.m_SvRegisterPort > 0 ? g_Config.m_SvRegisterPort : this->Port(), m_NetServer.GetGlobalToken());
 
 	m_NetServer.SetCallbacks(NewClientCallback, NewClientNoAuthCallback, ClientRejoinCallback, DelClientCallback, this);
+	// Include QUIC clients in the per ip limit of the legacy accept path,
+	// the QUIC accept path counts the clients of both transports likewise.
+	m_NetServer.SetNumOtherClientsWithAddrCallback(NumQuicClientsWithAddrCallback, this);
 
 	InitQuic();
 
@@ -3706,7 +3856,7 @@ int CServer::Run()
 								// entry not found -> whitelisted
 								m_aClients[ClientId].m_DnsblState = EDnsblState::WHITELISTED;
 
-								str_format(aBuf, sizeof(aBuf), "ClientId=%d addr=<{%s}> secure=%s whitelisted", ClientId, ClientAddrString(ClientId, true), m_NetServer.HasSecurityToken(ClientId) ? "yes" : "no");
+								str_format(aBuf, sizeof(aBuf), "ClientId=%d addr=<{%s}> secure=%s whitelisted", ClientId, ClientAddrString(ClientId, true), ClientSecure(ClientId) ? "yes" : "no");
 								Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "dnsbl", aBuf);
 							}
 							else
@@ -3714,7 +3864,7 @@ int CServer::Run()
 								// entry found -> blacklisted
 								m_aClients[ClientId].m_DnsblState = EDnsblState::BLACKLISTED;
 
-								str_format(aBuf, sizeof(aBuf), "ClientId=%d addr=<{%s}> secure=%s blacklisted", ClientId, ClientAddrString(ClientId, true), m_NetServer.HasSecurityToken(ClientId) ? "yes" : "no");
+								str_format(aBuf, sizeof(aBuf), "ClientId=%d addr=<{%s}> secure=%s blacklisted", ClientId, ClientAddrString(ClientId, true), ClientSecure(ClientId) ? "yes" : "no");
 								Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "dnsbl", aBuf);
 
 								if(Config()->m_SvDnsblBan)
@@ -3896,7 +4046,7 @@ void CServer::ConStatus(IConsole::IResult *pResult, void *pUser)
 			}
 			str_format(aBuf, sizeof(aBuf), "id=%d addr=<{%s}> name='%s' client=%s%d secure=%s flags=%d%s%s",
 				i, pThis->ClientAddrString(i, true), pThis->m_aClients[i].m_aName, pClientPrefix, pThis->m_aClients[i].m_DDNetVersion,
-				pThis->m_NetServer.HasSecurityToken(i) ? "yes" : "no", pThis->m_aClients[i].m_Flags, aDnsblStr, aAuthStr);
+				pThis->ClientSecure(i) ? "yes" : "no", pThis->m_aClients[i].m_Flags, aDnsblStr, aAuthStr);
 		}
 		else
 		{
@@ -4948,7 +5098,17 @@ int *CServer::GetIdMap(int ClientId)
 
 bool CServer::SetTimedOut(int ClientId, int OrigId)
 {
-	if(!m_NetServer.HasErrored(ClientId))
+	// ClientId is the timed out slot being reclaimed, OrigId the slot of
+	// the freshly connected client that issued /timeout. The old slot must
+	// be in a reclaimable errored state on its own transport.
+	if(m_aClients[ClientId].m_Quic)
+	{
+		if(!m_aClients[ClientId].m_QuicErrored)
+		{
+			return false;
+		}
+	}
+	else if(!m_NetServer.HasErrored(ClientId))
 	{
 		return false;
 	}
@@ -4959,11 +5119,71 @@ bool CServer::SetTimedOut(int ClientId, int OrigId)
 		LogoutClient(OrigId, "Timeout Protection");
 	}
 
-	m_NetServer.ResumeOldConnection(ClientId, OrigId);
+	// The reclaiming connection's own account resolution wins, no identity
+	// of the timed out connection survives.
+	std::erase_if(m_QuicLoginToClientId, [ClientId](const auto &Login) { return Login.second == ClientId; });
+	for(auto &[RequestId, LoginClientId] : m_QuicLoginToClientId)
+	{
+		if(LoginClientId == OrigId)
+		{
+			LoginClientId = ClientId;
+		}
+	}
+	m_aClients[ClientId].m_AccountId = m_aClients[OrigId].m_AccountId;
+	mem_copy(m_aClients[ClientId].m_aAccountKeyHash, m_aClients[OrigId].m_aAccountKeyHash, sizeof(m_aClients[ClientId].m_aAccountKeyHash));
 
 	m_aClients[ClientId].m_Sixup = m_aClients[OrigId].m_Sixup;
 
-	DelClientCallback(OrigId, "Timeout Protection used", this);
+	if(m_aClients[OrigId].m_Quic)
+	{
+		if(!m_aClients[ClientId].m_Quic)
+		{
+			// Silently discard the errored legacy connection of the old
+			// slot, the slot is used by the QUIC transport from now on.
+			m_NetServer.ResetConnection(ClientId);
+		}
+		// Move the live QUIC peer into the old slot.
+		const uint64_t PeerId = m_aClients[OrigId].m_QuicPeerId;
+		DelClientCallback(OrigId, "Timeout Protection used", this);
+		m_aClients[ClientId].m_Quic = true;
+		m_aClients[ClientId].m_QuicPeerId = PeerId;
+		m_aClients[ClientId].m_QuicAddr = m_aClients[OrigId].m_QuicAddr;
+		m_aClients[ClientId].m_aQuicAddrString = m_aClients[OrigId].m_aQuicAddrString;
+		m_aClients[ClientId].m_aQuicAddrStringNoPort = m_aClients[OrigId].m_aQuicAddrStringNoPort;
+		m_aClients[ClientId].m_QuicErrored = false;
+		m_aClients[ClientId].m_QuicErrorTime = 0;
+		m_aClients[ClientId].m_aQuicErrorString[0] = '\0';
+		// The reclaimed slot keeps its timeout protection, like a resumed
+		// legacy connection object does.
+		m_aClients[ClientId].m_QuicTimeoutProtected = true;
+		// Release the new slot before remapping the peer to the old one.
+		ResetQuicClient(OrigId);
+		m_QuicPeerToClientId[PeerId] = ClientId;
+		m_NetServer.SetSlotReserved(ClientId, true);
+	}
+	else
+	{
+		m_NetServer.ResumeOldConnection(ClientId, OrigId);
+		DelClientCallback(OrigId, "Timeout Protection used", this);
+		if(m_aClients[ClientId].m_Quic)
+		{
+			// The old slot was an errored QUIC slot, it is a legacy slot
+			// again from now on; carry the timeout protection over to the
+			// resumed connection like a resumed legacy connection keeps it.
+			m_aClients[ClientId].m_Quic = false;
+			m_aClients[ClientId].m_QuicPeerId = 0;
+			m_aClients[ClientId].m_QuicAddr = NETADDR_ZEROED;
+			m_aClients[ClientId].m_aQuicAddrString = {};
+			m_aClients[ClientId].m_aQuicAddrStringNoPort = {};
+			m_aClients[ClientId].m_QuicTimeoutProtected = false;
+			m_aClients[ClientId].m_QuicErrored = false;
+			m_aClients[ClientId].m_QuicErrorTime = 0;
+			m_aClients[ClientId].m_aQuicErrorString[0] = '\0';
+			m_NetServer.SetSlotReserved(ClientId, false);
+			m_NetServer.IgnoreTimeouts(ClientId);
+		}
+	}
+
 	m_aClients[ClientId].m_AuthKey = -1;
 	m_aClients[ClientId].m_Flags = m_aClients[OrigId].m_Flags;
 	m_aClients[ClientId].m_DDNetVersion = m_aClients[OrigId].m_DDNetVersion;

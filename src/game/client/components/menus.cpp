@@ -2365,6 +2365,10 @@ void CMenus::OnWindowResize()
 
 void CMenus::OnRender()
 {
+	// Process account events even when the account page is not shown, so
+	// unsolicited events (e.g. a server-side logout) are not missed.
+	ProcessAccountEvents();
+
 	if(Client()->State() != IClient::STATE_ONLINE && Client()->State() != IClient::STATE_DEMOPLAYBACK)
 		SetActive(true);
 

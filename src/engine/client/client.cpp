@@ -95,6 +95,11 @@ using namespace std::chrono_literals;
 static constexpr ColorRGBA CLIENT_NETWORK_PRINT_COLOR = ColorRGBA(0.7f, 1, 0.7f, 1.0f);
 static constexpr ColorRGBA CLIENT_NETWORK_PRINT_ERROR_COLOR = ColorRGBA(1.0f, 0.25f, 0.25f, 1.0f);
 
+// Budget for establishing a QUIC connection: waiting for the account
+// certificate and the QUIC handshake each may take this long before the
+// client falls back to the legacy transport.
+static constexpr int64_t QUIC_CONNECT_TIMEOUT_SECONDS = 5;
+
 CSnapshotDelta *CClient::SnapshotDelta()
 {
 	if(IsSixup())
@@ -633,6 +638,14 @@ void CClient::Connect(const char *pAddress, const char *pPassword)
 	Disconnect();
 	dbg_assert(m_State == IClient::STATE_OFFLINE, "Disconnect must ensure that client is offline");
 
+	// Consume the connect_quic parameters up front, so they only apply
+	// to this connect, even if it bails out early.
+	const int QuicForcePort = m_QuicForcePort;
+	char aQuicForceHashHex[sizeof(m_aQuicForceHashHex)];
+	str_copy(aQuicForceHashHex, m_aQuicForceHashHex);
+	m_QuicForcePort = 0;
+	m_aQuicForceHashHex[0] = '\0';
+
 	const NETADDR LastAddr = ServerAddress();
 
 	if(pAddress != m_aConnectAddressStr)
@@ -722,15 +735,18 @@ void CClient::Connect(const char *pAddress, const char *pPassword)
 	m_Sixup = OnlySixup;
 	if(m_Sixup)
 	{
+		m_aConnViaQuic[CONN_MAIN] = false;
 		m_aNetClient[CONN_MAIN].Connect7(aConnectAddrs, NumConnectAddrs);
 	}
-	else if(PrepareQuicConnect(aConnectAddrs, NumConnectAddrs))
+	else if(PrepareQuicConnect(aConnectAddrs, NumConnectAddrs, QuicForcePort, aQuicForceHashHex))
 	{
 		// The QUIC connection starts once the account certificate is
 		// ready, see QuicConnectWithCert.
 	}
 	else
 	{
+		// Connect resets the stale error string of the legacy conn
+		m_aConnViaQuic[CONN_MAIN] = false;
 		m_aNetClient[CONN_MAIN].Connect(aConnectAddrs, NumConnectAddrs);
 	}
 
@@ -777,7 +793,9 @@ void CClient::DisconnectWithReason(const char *pReason)
 	GameClient()->ForceUpdateConsoleRemoteCompletionSuggestions();
 	m_aNetClient[CONN_MAIN].Disconnect(pReason);
 	m_aQuicNetClient[CONN_MAIN].Disconnect(pReason);
-	m_aConnViaQuic[CONN_MAIN] = false;
+	// m_aConnViaQuic[CONN_MAIN] is intentionally kept, so that the state
+	// change below and everything until the next connect read the error
+	// string and server address of the transport that was actually used.
 	m_QuicConnectPending = false;
 	SetState(IClient::STATE_OFFLINE);
 	GameClient()->Map()->Unload();
@@ -870,12 +888,20 @@ void CClient::DummyConnect()
 	if(m_aConnViaQuic[CONN_MAIN])
 	{
 		m_aConnViaQuic[CONN_DUMMY] = true;
-		m_aQuicNetClient[CONN_DUMMY].Connect(m_aQuicConnectAddr, m_aQuicServerPubKeyHash, m_Accounts.ConnectCertDer(), m_Accounts.ConnectKeyDer(), QUIC_IDLE_TIMEOUT_MS);
+		char aBindAddr[NETADDR_MAXSTRSIZE];
+		QuicBindAddr(aBindAddr, sizeof(aBindAddr));
+		m_aQuicNetClient[CONN_DUMMY].Connect(m_aQuicConnectAddr, aBindAddr, m_aQuicServerPubKeyHash, m_Accounts.ConnectCertDer(), m_Accounts.ConnectKeyDer(), QUIC_IDLE_TIMEOUT_MS);
 	}
 	else if(IsSixup())
+	{
+		m_aConnViaQuic[CONN_DUMMY] = false;
 		m_aNetClient[CONN_DUMMY].Connect7(m_aNetClient[CONN_MAIN].ServerAddress(), 1);
+	}
 	else
+	{
+		m_aConnViaQuic[CONN_DUMMY] = false;
 		m_aNetClient[CONN_DUMMY].Connect(m_aNetClient[CONN_MAIN].ServerAddress(), 1);
+	}
 
 	m_aInputtimeMarginGraphs[CONN_DUMMY].Init(-150.0f, 150.0f);
 	m_aGametimeMarginGraphs[CONN_DUMMY].Init(-150.0f, 150.0f);
@@ -885,7 +911,9 @@ void CClient::DummyDisconnect(const char *pReason)
 {
 	m_aNetClient[CONN_DUMMY].Disconnect(pReason);
 	m_aQuicNetClient[CONN_DUMMY].Disconnect(pReason);
-	m_aConnViaQuic[CONN_DUMMY] = false;
+	// m_aConnViaQuic[CONN_DUMMY] is intentionally kept, so the dummy
+	// disconnect reason is read from the transport that was used. The
+	// next DummyConnect sets it again.
 	g_Config.m_ClDummy = 0;
 
 	m_aRconAuthed[1] = 0;
@@ -997,6 +1025,12 @@ void CClient::RenderDebug()
 
 	str_format(aBuffer, sizeof(aBuffer), "Prediction time: %d ms", GetPredictionTime());
 	Graphics()->QuadsText(2, 2 + FontSize, FontSize, aBuffer);
+
+	if(m_aConnViaQuic[g_Config.m_ClDummy] && m_aQuicNetClient[g_Config.m_ClDummy].State() == CQuicNetClient::EState::ONLINE)
+	{
+		str_format(aBuffer, sizeof(aBuffer), "QUIC RTT: %d ms", m_aQuicNetClient[g_Config.m_ClDummy].Rtt());
+		Graphics()->QuadsText(2, 2 + 2 * FontSize, FontSize, aBuffer);
+	}
 
 	str_format(aBuffer, sizeof(aBuffer), "FPS: %3d", round_to_int(1.0f / m_FrameTimeAverage));
 	Graphics()->QuadsText(20.0f * FontSize, 2, FontSize, aBuffer);
@@ -2631,6 +2665,12 @@ void CClient::LoadDDNetInfo()
 
 int CClient::ConnectNetTypes() const
 {
+	if(m_aConnViaQuic[CONN_MAIN])
+	{
+		// The legacy conn has no connect addresses during a QUIC
+		// connect, use the QUIC target instead.
+		return m_QuicServerAddr.type;
+	}
 	const NETADDR *pConnectAddrs;
 	int NumConnectAddrs;
 	m_aNetClient[CONN_MAIN].ConnectAddresses(&pConnectAddrs, &NumConnectAddrs);
@@ -2642,7 +2682,7 @@ int CClient::ConnectNetTypes() const
 	return NetType;
 }
 
-int CClient::NetState(int Conn)
+int CClient::NetState(int Conn) const
 {
 	if(Conn == CONN_MAIN && m_QuicConnectPending)
 	{
@@ -2672,26 +2712,21 @@ const char *CClient::NetErrorString(int Conn) const
 	return m_aNetClient[Conn].ErrorString();
 }
 
-bool CClient::PrepareQuicConnect(const NETADDR *pAddrs, int NumAddrs)
+bool CClient::PrepareQuicConnect(const NETADDR *pAddrs, int NumAddrs, int ForcePort, const char *pForceHashHex)
 {
-	const int ForcePort = m_QuicForcePort;
-	char aForceHashHex[sizeof(m_aQuicForceHashHex)];
-	str_copy(aForceHashHex, m_aQuicForceHashHex);
-	m_QuicForcePort = 0;
-	m_aQuicForceHashHex[0] = '\0';
-
 	if(!m_Accounts.Enabled() || (!g_Config.m_ClQuic && ForcePort == 0))
 	{
 		if(ForcePort != 0)
 		{
 			log_warn("client/quic", "cannot connect via QUIC, account support is disabled");
 		}
+		m_aConnViaQuic[CONN_MAIN] = false;
 		return false;
 	}
 	for(int i = 0; i < NumAddrs; i++)
 	{
 		int QuicPort = ForcePort;
-		const char *pHashHex = aForceHashHex;
+		const char *pHashHex = pForceHashHex;
 		if(QuicPort == 0)
 		{
 			const IServerBrowser::CServerEntry *pEntry = m_ServerBrowser.Find(pAddrs[i]);
@@ -2707,52 +2742,101 @@ bool CClient::PrepareQuicConnect(const NETADDR *pAddrs, int NumAddrs)
 			log_warn("client/quic", "server advertised an invalid QUIC certificate hash");
 			continue;
 		}
-		char aIp[NETADDR_MAXSTRSIZE];
-		net_addr_str(&pAddrs[i], aIp, sizeof(aIp), false);
-		if(pAddrs[i].type & NETTYPE_IPV6)
-		{
-			str_format(m_aQuicConnectAddr, sizeof(m_aQuicConnectAddr), "[%s]:%d", aIp, QuicPort);
-		}
-		else
-		{
-			str_format(m_aQuicConnectAddr, sizeof(m_aQuicConnectAddr), "%s:%d", aIp, QuicPort);
-		}
+		// net_addr_str emits "ip:port" for IPv4 and "[ip]:port" for
+		// IPv6, both parseable by the QUIC transport.
+		NETADDR QuicAddr = pAddrs[i];
+		QuicAddr.port = QuicPort;
+		net_addr_str(&QuicAddr, m_aQuicConnectAddr, sizeof(m_aQuicConnectAddr), true);
 		m_QuicServerAddr = pAddrs[i];
 		mem_copy(m_aQuicFallbackAddrs, pAddrs, NumAddrs * sizeof(NETADDR));
 		m_NumQuicFallbackAddrs = NumAddrs;
 		m_aConnViaQuic[CONN_MAIN] = true;
 		m_QuicConnectPending = true;
+		m_QuicConnectStartTime = time_get();
+		// nothing may read the legacy error string while connecting via
+		// QUIC, reset it regardless so it cannot leak into popups
+		m_aNetClient[CONN_MAIN].ResetErrorString();
 		m_Accounts.RequestConnectCert();
 		log_info("client/quic", "server supports QUIC, connecting to %s", m_aQuicConnectAddr);
 		return true;
 	}
+	m_aConnViaQuic[CONN_MAIN] = false;
 	return false;
 }
 
 void CClient::QuicConnectWithCert()
 {
 	m_QuicConnectPending = false;
+	// fresh budget for the handshake, see QUIC_CONNECT_TIMEOUT_SECONDS
+	m_QuicConnectStartTime = time_get();
 	if(m_Accounts.CertWarning()[0] != '\0')
 	{
 		log_warn("client/quic", "%s", m_Accounts.CertWarning());
+		if(m_Accounts.LoggedIn())
+		{
+			// The user is logged in but got an anonymous certificate,
+			// make the degradation visible.
+			char aMessage[256];
+			str_format(aMessage, sizeof(aMessage), Localize("Your login could not be used for this connection: %s"), m_Accounts.CertWarning());
+			AddWarning(SWarning(Localize("Account"), aMessage));
+		}
 	}
-	m_aQuicNetClient[CONN_MAIN].Connect(m_aQuicConnectAddr, m_aQuicServerPubKeyHash, m_Accounts.ConnectCertDer(), m_Accounts.ConnectKeyDer(), QUIC_IDLE_TIMEOUT_MS);
+	char aBindAddr[NETADDR_MAXSTRSIZE];
+	QuicBindAddr(aBindAddr, sizeof(aBindAddr));
+	m_aQuicNetClient[CONN_MAIN].Connect(m_aQuicConnectAddr, aBindAddr, m_aQuicServerPubKeyHash, m_Accounts.ConnectCertDer(), m_Accounts.ConnectKeyDer(), QUIC_IDLE_TIMEOUT_MS);
 }
 
 void CClient::QuicFallback(const char *pError)
 {
 	log_warn("client/quic", "QUIC connection failed (%s), falling back to UDP", pError);
+	m_QuicConnectPending = false;
+	if(m_NumQuicFallbackAddrs == 0)
+	{
+		// No addresses to fall back to. Keep m_aConnViaQuic set so the
+		// QUIC error string stays readable after the disconnect.
+		Disconnect();
+		return;
+	}
+	if(m_Accounts.LoggedIn() && m_Accounts.CertWarning()[0] == '\0')
+	{
+		// The user is logged in with an account certificate, but the
+		// login does not apply over the legacy transport.
+		AddWarning(SWarning(Localize("Account"), Localize("Could not connect via QUIC, using UDP instead. Your login does not apply to this connection.")));
+	}
 	m_aQuicNetClient[CONN_MAIN].Disconnect("");
 	m_aConnViaQuic[CONN_MAIN] = false;
-	m_QuicConnectPending = false;
-	if(m_NumQuicFallbackAddrs > 0)
+	m_aNetClient[CONN_MAIN].Connect(m_aQuicFallbackAddrs, m_NumQuicFallbackAddrs);
+}
+
+void CClient::QuicBindAddr(char *pBuf, size_t BufSize) const
+{
+	pBuf[0] = '\0';
+	if(g_Config.m_Bindaddr[0] == '\0')
 	{
-		m_aNetClient[CONN_MAIN].Connect(m_aQuicFallbackAddrs, m_NumQuicFallbackAddrs);
+		return;
 	}
-	else
+	// Prefer the address family of the QUIC target. If the bindaddr only
+	// resolves to the other family, pass it anyway: the QUIC transport
+	// fails the connect with a clear error and the client falls back.
+	NETADDR BindAddr;
+	if(net_host_lookup(g_Config.m_Bindaddr, &BindAddr, m_QuicServerAddr.type & (NETTYPE_IPV4 | NETTYPE_IPV6)) != 0 &&
+		net_host_lookup(g_Config.m_Bindaddr, &BindAddr, NETTYPE_ALL) != 0)
 	{
-		Disconnect();
+		// Startup already verified that the bindaddr resolves, so this
+		// is unexpected; binding to the default address instead.
+		log_warn("client/quic", "could not resolve bindaddr '%s', using the default bind address", g_Config.m_Bindaddr);
+		return;
 	}
+	char aAddr[NETADDR_MAXSTRSIZE];
+	net_addr_str(&BindAddr, aAddr, sizeof(aAddr), false);
+	// The QUIC transport expects IPv6 addresses without brackets.
+	const char *pIp = aAddr;
+	if(aAddr[0] == '[')
+	{
+		aAddr[str_length(aAddr) - 1] = '\0';
+		pIp = aAddr + 1;
+	}
+	str_copy(pBuf, pIp, BufSize);
 }
 
 void CClient::PumpNetwork()
@@ -2765,7 +2849,11 @@ void CClient::PumpNetwork()
 	if(State() != IClient::STATE_DEMOPLAYBACK)
 	{
 		// start the QUIC connection once the account certificate is ready
-		if(m_QuicConnectPending && m_Accounts.ConnectCertReady())
+		if(m_QuicConnectPending && m_Accounts.ConnectCertFailed())
+		{
+			QuicFallback(m_Accounts.CertError());
+		}
+		else if(m_QuicConnectPending && m_Accounts.ConnectCertReady())
 		{
 			QuicConnectWithCert();
 		}
@@ -2776,6 +2864,15 @@ void CClient::PumpNetwork()
 			m_aQuicNetClient[CONN_MAIN].State() == CQuicNetClient::EState::ERROR)
 		{
 			QuicFallback(m_aQuicNetClient[CONN_MAIN].ErrorString());
+		}
+
+		// bound the QUIC connect, so a stale advertised endpoint or an
+		// unresponsive account server does not stall the connect
+		if((m_QuicConnectPending ||
+			   (m_aConnViaQuic[CONN_MAIN] && State() == IClient::STATE_CONNECTING && m_aQuicNetClient[CONN_MAIN].State() == CQuicNetClient::EState::CONNECTING)) &&
+			time_get() - m_QuicConnectStartTime > QUIC_CONNECT_TIMEOUT_SECONDS * time_freq())
+		{
+			QuicFallback("Timeout");
 		}
 
 		// check for errors of main and dummy
@@ -2808,7 +2905,17 @@ void CClient::PumpNetwork()
 		if(State() == IClient::STATE_CONNECTING && NetState(CONN_MAIN) == NETSTATE_ONLINE)
 		{
 			// we switched to online
-			m_pConsole->Print(IConsole::OUTPUT_LEVEL_STANDARD, "client", "connected, sending info", CLIENT_NETWORK_PRINT_COLOR);
+			if(ConnectedViaQuic())
+			{
+				const bool LoginUsed = m_Accounts.LoggedIn() && m_Accounts.CertWarning()[0] == '\0';
+				char aBuf[128];
+				str_format(aBuf, sizeof(aBuf), "connected via QUIC (%s), sending info", LoginUsed ? "with account login" : "without login");
+				m_pConsole->Print(IConsole::OUTPUT_LEVEL_STANDARD, "client", aBuf, CLIENT_NETWORK_PRINT_COLOR);
+			}
+			else
+			{
+				m_pConsole->Print(IConsole::OUTPUT_LEVEL_STANDARD, "client", "connected, sending info", CLIENT_NETWORK_PRINT_COLOR);
+			}
 			SetState(IClient::STATE_LOADING);
 			SetLoadingStateDetail(IClient::LOADING_STATE_DETAIL_INITIAL);
 			SendInfo(CONN_MAIN);
@@ -2843,10 +2950,8 @@ void CClient::PumpNetwork()
 			Chunk.m_Flags = Event.m_Unreliable ? 0 : NET_CHUNKFLAG_VITAL;
 			Chunk.m_pData = Event.m_vData.data();
 			Chunk.m_DataSize = Event.m_vData.size();
-			if(Conn == CONN_MAIN || Conn == CONN_DUMMY)
-			{
-				ProcessServerPacket(&Chunk, Conn, g_Config.m_ClDummy ^ Conn);
-			}
+			// only CONN_MAIN and CONN_DUMMY ever use QUIC
+			ProcessServerPacket(&Chunk, Conn, g_Config.m_ClDummy ^ Conn);
 		}
 	}
 
@@ -2946,10 +3051,10 @@ void CClient::UpdateDemoIntraTimers()
 void CClient::Update()
 {
 	m_Accounts.Update();
-	if(m_aConnViaQuic[CONN_MAIN])
+	if(ConnectedViaQuic())
 	{
-		// keep the account certificate fresh while playing, so the next
-		// connect does not have to wait for the account server
+		// keep the account certificate fresh while playing, so a dummy
+		// connect or reconnect does not present an expired certificate
 		m_Accounts.TryRefreshCert();
 	}
 
@@ -3630,20 +3735,35 @@ void CClient::Run()
 		else if(g_Config.m_ClRefreshRate)
 		{
 			SleepTimeInNanoSeconds = (std::chrono::nanoseconds(1s) / (int64_t)g_Config.m_ClRefreshRate) - (Now - LastTime);
-			auto SleepTimeInNanoSecondsInner = SleepTimeInNanoSeconds;
-			auto NowInner = Now;
-			while(std::chrono::duration_cast<std::chrono::microseconds>(SleepTimeInNanoSecondsInner) > 0us)
+			if(ConnectedViaQuic())
 			{
-				// The QUIC transport does not use this socket, so only
-				// wait shortly to process its traffic without much delay.
-				if(m_aConnViaQuic[CONN_MAIN])
+				// The QUIC transport does not use this socket, so wait
+				// in slices of at most one millisecond, waking up early
+				// when QUIC data arrives, while still honoring the
+				// whole sleep budget otherwise.
+				auto SleepTimeRemaining = SleepTimeInNanoSeconds;
+				auto NowInner = Now;
+				while(std::chrono::duration_cast<std::chrono::microseconds>(SleepTimeRemaining) > 0us)
 				{
-					SleepTimeInNanoSecondsInner = std::min(SleepTimeInNanoSecondsInner, decltype(SleepTimeInNanoSecondsInner)(1000000ns));
+					if(net_socket_read_wait(m_aNetClient[CONN_MAIN].m_Socket, std::min(SleepTimeRemaining, std::chrono::nanoseconds(1ms))))
+					{
+						break;
+					}
+					const auto NowInnerCalc = time_get_nanoseconds();
+					// data arrived on the QUIC connection since we
+					// started waiting, wake up to process it
+					if(m_aQuicNetClient[CONN_MAIN].State() == CQuicNetClient::EState::ONLINE &&
+						std::chrono::milliseconds(m_aQuicNetClient[CONN_MAIN].MillisSinceReceive()) < NowInnerCalc - Now)
+					{
+						break;
+					}
+					SleepTimeRemaining -= (NowInnerCalc - NowInner);
+					NowInner = NowInnerCalc;
 				}
-				net_socket_read_wait(m_aNetClient[CONN_MAIN].m_Socket, SleepTimeInNanoSecondsInner);
-				auto NowInnerCalc = time_get_nanoseconds();
-				SleepTimeInNanoSecondsInner -= (NowInnerCalc - NowInner);
-				NowInner = NowInnerCalc;
+			}
+			else if(SleepTimeInNanoSeconds > 0ns)
+			{
+				net_socket_read_wait(m_aNetClient[CONN_MAIN].m_Socket, SleepTimeInNanoSeconds);
 			}
 			Slept = true;
 		}
@@ -3795,9 +3915,25 @@ void CClient::Con_Connect(IConsole::IResult *pResult, void *pUserData)
 void CClient::Con_ConnectQuic(IConsole::IResult *pResult, void *pUserData)
 {
 	CClient *pSelf = (CClient *)pUserData;
-	pSelf->m_QuicForcePort = pResult->GetInteger(1);
+	// The user explicitly requested pinned QUIC, error out entirely on
+	// invalid parameters instead of silently connecting via UDP.
+	const int Port = pResult->GetInteger(1);
+	if(Port < 1 || Port > 65535)
+	{
+		log_error("client/quic", "invalid QUIC port %d", Port);
+		return;
+	}
+	unsigned char aPubKeyHash[sizeof(pSelf->m_aQuicServerPubKeyHash)];
+	if(str_hex_decode(aPubKeyHash, sizeof(aPubKeyHash), pResult->GetString(2)) != 0)
+	{
+		log_error("client/quic", "invalid certificate hash '%s', expected %d hex characters", pResult->GetString(2), (int)sizeof(aPubKeyHash) * 2);
+		return;
+	}
+	pSelf->m_QuicForcePort = Port;
 	str_copy(pSelf->m_aQuicForceHashHex, pResult->GetString(2));
-	pSelf->Connect(pResult->GetString(0));
+	// defer the connect like Con_Connect, so connect_quic works from
+	// the command line and config, before m_Accounts.Init in Run
+	str_copy(pSelf->m_aCmdConnect, pResult->GetString(0));
 }
 
 void CClient::Con_Disconnect(IConsole::IResult *pResult, void *pUserData)
@@ -4225,6 +4361,9 @@ const char *CClient::DemoPlayer_Play(const char *pFilename, int StorageType)
 		return Localize("No demo with this filename exists");
 
 	Disconnect();
+	// route the error string to the legacy conn, whose error is reset
+	// below, so no stale QUIC error can pop up during demo playback
+	m_aConnViaQuic[CONN_MAIN] = false;
 	m_aNetClient[CONN_MAIN].ResetErrorString();
 
 	SetState(IClient::STATE_LOADING);

@@ -74,6 +74,13 @@ public:
 	 * resolved asynchronously shortly after the client connected.
 	 */
 	virtual int64_t ClientAccountId(int ClientId) const = 0;
+	/**
+	 * Returns the sha256 hash (32 bytes) of the public key of the
+	 * certificate the client connected with, or `nullptr` while unknown.
+	 * Resolved asynchronously like the account id. This is a stable
+	 * pseudonymous identity also for clients without account.
+	 */
+	virtual const unsigned char *ClientAccountKeyHash(int ClientId) const = 0;
 	virtual const std::array<char, NETADDR_MAXSTRSIZE> &ClientAddrStringImpl(int ClientId, bool IncludePort) const = 0;
 	const char *ClientAddrString(int ClientId, bool IncludePort) const { return ClientAddrStringImpl(ClientId, IncludePort).data(); }
 

@@ -78,7 +78,10 @@ mod ffi {
     struct SAccountEvent {
         /// False if no event was pending.
         m_Valid: bool,
-        /// Id that was returned when the operation was started.
+        /// Id that was returned when the operation was started. 0 means
+        /// the event is unsolicited, currently only LOGOUT events for a
+        /// profile that was removed as side effect of CERT_AND_KEY (the
+        /// removed profile key is in the payload).
         m_RequestId: u64,
         /// Operation this event belongs to.
         m_Kind: EAccountEventKind,
@@ -86,10 +89,15 @@ mod ffi {
         m_Success: bool,
         /// Error class, NONE on success.
         m_ErrorKind: EAccountErrorKind,
-        /// Human readable error description.
+        /// Human readable error description, empty on success.
         m_Error: String,
+        /// Human readable warning for operations that succeeded in a
+        /// degraded way, e.g. CERT_AND_KEY falling back to a self signed
+        /// certificate.
+        m_Warning: String,
         /// Operation specific payload: profile key for LOGIN, token for
-        /// steam token operations, url for WEB_VALIDATION_NEEDED errors.
+        /// steam token operations, url for WEB_VALIDATION_NEEDED errors,
+        /// removed profile key for unsolicited LOGOUT events.
         m_Payload: String,
         /// Certificate in der format, for CERT_AND_KEY.
         m_aCertDer: Vec<u8>,
@@ -151,13 +159,15 @@ mod ffi {
         m_Valid: bool,
         /// Id that was returned by `BeginLogin`.
         m_RequestId: u64,
-        /// The account id, 0 if the client has no (valid) account.
+        /// The account id, 0 if the client has no (valid) account or the
+        /// database registration failed (the client must be treated as
+        /// anonymous then).
         m_AccountId: i64,
         /// Sha256 fingerprint of the public key of the client certificate.
         m_aPublicKeyHash: Vec<u8>,
         /// Whether this account was seen the first time on this server.
         m_NewAccount: bool,
-        /// Error description if the database registration failed.
+        /// Error description if the login could not be resolved.
         m_Error: String,
     }
 
@@ -248,10 +258,10 @@ mod ffi {
         /// Fetches the account info of the given profile.
         fn AccountInfo(self: &CAccountsClient, ProfileKey: &str) -> u64;
         /// Requests a certificate and session key for connecting to a game
-        /// server. Also works without an account (self signed cert).
+        /// server, also used to refresh a certificate that is about to
+        /// expire. Also works without an account (self signed cert, with a
+        /// warning in the event).
         fn RequestCertAndKey(self: &CAccountsClient) -> u64;
-        /// Refreshes the account certificate if it is about to expire.
-        fn TryRefreshCert(self: &CAccountsClient);
         /// Currently stored profiles.
         fn Profiles(self: &CAccountsClient) -> Vec<SAccountProfile>;
         /// Switches the active profile.
@@ -263,11 +273,16 @@ mod ffi {
         type CQuicClient;
 
         /// Creates the client and starts connecting to `Addr` in the
-        /// background. The server certificate is verified against the
-        /// sha256 fingerprint `ServerPubKeyHash` (32 bytes). `CertDer` and
+        /// background. `BindAddr` is the local IP without port to bind the
+        /// endpoint to, empty for the unspecified address of the target's
+        /// address family; a bind address that cannot be parsed, bound or
+        /// whose address family does not match the target fails the
+        /// connect. The server certificate is verified against the sha256
+        /// fingerprint `ServerPubKeyHash` (32 bytes). `CertDer` and
         /// `KeyDer` are the own certificate and pkcs8 session key.
         fn CreateQuicClient(
             Addr: &str,
+            BindAddr: &str,
             ServerPubKeyHash: &[u8],
             CertDer: &[u8],
             KeyDer: &[u8],
@@ -280,7 +295,8 @@ mod ffi {
         fn Send(self: &CQuicClient, Data: &[u8], Unreliable: bool) -> bool;
         /// Closes the connection with the given reason.
         fn Close(self: &CQuicClient, Reason: &str);
-        /// Milliseconds since the last time data arrived from the server.
+        /// Milliseconds since the last time data arrived from the server,
+        /// 0 while the connection is not established.
         fn MillisSinceReceive(self: &CQuicClient) -> u64;
         /// Current smoothed round trip time to the server in milliseconds.
         fn RttMillis(self: &CQuicClient) -> u64;
@@ -309,25 +325,31 @@ mod ffi {
         fn Send(self: &CQuicServer, PeerId: u64, Data: &[u8], Unreliable: bool) -> bool;
         /// Closes the connection to the given peer with the given reason.
         fn ClosePeer(self: &CQuicServer, PeerId: u64, Reason: &str);
-        /// Whether new connections are accepted.
-        fn SetAcceptConnections(self: &CQuicServer, Accept: bool);
         /// Current smoothed round trip time to the peer in milliseconds.
         fn RttMillis(self: &CQuicServer, PeerId: u64) -> u64;
+        /// Milliseconds since the last stream frame or datagram arrived
+        /// from the peer, -1 if the peer is unknown. QUIC keep alives do
+        /// not count, so this is an application level liveness signal.
+        fn MillisSinceReceive(self: &CQuicServer, PeerId: u64) -> i64;
 
         /// Game server side account manager.
         type CAccountsGameServer;
 
         /// Creates the account manager. `DbFilePath` is the sqlite database
         /// for the user table, `StoragePath` caches the account server
-        /// certificates.
+        /// certificates. Returns immediately, initialization runs in the
+        /// background and is retried until it succeeds.
         fn CreateAccountsGameServer(
             DbFilePath: &str,
             StoragePath: &str,
             AccountServerUrl: &str,
         ) -> Box<CAccountsGameServer>;
-        /// The error that occurred during creation, empty if none.
+        /// The hard configuration error (invalid account server url) that
+        /// occurred during creation, empty if none. Network failures are
+        /// not reported here, initialization keeps retrying.
         fn Error(self: &CAccountsGameServer) -> String;
         /// Starts resolving the account for the given client certificate.
+        /// Logins that arrive before initialization finished are queued.
         fn BeginLogin(self: &CAccountsGameServer, CertDer: &[u8]) -> u64;
         /// Polls the next resolved login.
         fn PollLogin(self: &CAccountsGameServer) -> SGameServerLogin;
@@ -387,6 +409,7 @@ impl SAccountEvent {
             m_Success: false,
             m_ErrorKind: EAccountErrorKind::NONE,
             m_Error: String::new(),
+            m_Warning: String::new(),
             m_Payload: String::new(),
             m_aCertDer: Vec::new(),
             m_aKeyDer: Vec::new(),
@@ -438,6 +461,7 @@ impl CAccountsClient {
                 AccountErrorKind::Other => EAccountErrorKind::OTHER,
             },
             m_Error: event.error,
+            m_Warning: event.warning,
             m_Payload: event.payload,
             m_aCertDer: event.cert_der,
             m_aKeyDer: event.key_der,
@@ -532,10 +556,6 @@ impl CAccountsClient {
         self.0.cert_and_key()
     }
 
-    fn TryRefreshCert(&self) {
-        self.0.try_refresh_cert();
-    }
-
     fn Profiles(&self) -> Vec<SAccountProfile> {
         self.0
             .profiles()
@@ -613,6 +633,7 @@ impl SQuicEvent {
 
 fn CreateQuicClient(
     Addr: &str,
+    BindAddr: &str,
     ServerPubKeyHash: &[u8],
     CertDer: &[u8],
     KeyDer: &[u8],
@@ -621,6 +642,7 @@ fn CreateQuicClient(
     let hash: [u8; 32] = ServerPubKeyHash.try_into().unwrap_or_default();
     Box::new(CQuicClient(QuicClient::connect(
         Addr.to_owned(),
+        BindAddr.to_owned(),
         ServerVerification::PubKeyHash(hash),
         CertDer.to_vec(),
         KeyDer.to_vec(),
@@ -691,12 +713,12 @@ impl CQuicServer {
         self.0.close_peer(PeerId, Reason);
     }
 
-    fn SetAcceptConnections(&self, Accept: bool) {
-        self.0.set_accept_connections(Accept);
-    }
-
     fn RttMillis(&self, PeerId: u64) -> u64 {
         self.0.rtt_millis(PeerId)
+    }
+
+    fn MillisSinceReceive(&self, PeerId: u64) -> i64 {
+        self.0.millis_since_receive(PeerId)
     }
 }
 

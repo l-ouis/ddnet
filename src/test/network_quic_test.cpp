@@ -67,7 +67,7 @@ protected:
 		str_format(aAddr, sizeof(aAddr), "127.0.0.1:%d", m_Server.Port());
 		std::vector<unsigned char> vCertDer(m_ClientIdentity.m_aCertDer.begin(), m_ClientIdentity.m_aCertDer.end());
 		std::vector<unsigned char> vKeyDer(m_ClientIdentity.m_aKeyDer.begin(), m_ClientIdentity.m_aKeyDer.end());
-		m_Client.Connect(aAddr, m_ServerIdentity.m_aPublicKeyHash.data(), vCertDer, vKeyDer, 5000);
+		m_Client.Connect(aAddr, nullptr, m_ServerIdentity.m_aPublicKeyHash.data(), vCertDer, vKeyDer, 5000);
 
 		CQuicEvent Event;
 		EXPECT_TRUE(WaitForEvent([&](CQuicEvent *pEvent) { return m_Client.Recv(pEvent); }, &Event));
@@ -128,7 +128,7 @@ TEST_F(NetworkQuic, WrongServerKeyHashFails)
 	std::fill(std::begin(aWrongHash), std::end(aWrongHash), 0x42);
 	std::vector<unsigned char> vCertDer(m_ClientIdentity.m_aCertDer.begin(), m_ClientIdentity.m_aCertDer.end());
 	std::vector<unsigned char> vKeyDer(m_ClientIdentity.m_aKeyDer.begin(), m_ClientIdentity.m_aKeyDer.end());
-	m_Client.Connect(aAddr, aWrongHash, vCertDer, vKeyDer, 5000);
+	m_Client.Connect(aAddr, nullptr, aWrongHash, vCertDer, vKeyDer, 5000);
 
 	CQuicEvent Event;
 	ASSERT_TRUE(WaitForEvent([&](CQuicEvent *pEvent) { return m_Client.Recv(pEvent); }, &Event));

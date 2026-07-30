@@ -104,6 +104,7 @@ static CAccountEvent EventFromBridge(const accounts::SAccountEvent &Event)
 		break;
 	}
 	Result.m_ErrorText = std::string(Event.m_Error);
+	Result.m_Warning = std::string(Event.m_Warning);
 	Result.m_Payload = std::string(Event.m_Payload);
 	Result.m_AccountId = Event.m_AccountId;
 	Result.m_CreationDate = std::string(Event.m_CreationDate);
@@ -152,12 +153,39 @@ void CAccountsManager::Update()
 		{
 			break;
 		}
-		if(Event.m_Kind == accounts::EAccountEventKind::CERT_AND_KEY && Event.m_RequestId == m_CertRequestId)
+		if(Event.m_Kind == accounts::EAccountEventKind::CERT_AND_KEY && Event.m_RequestId != 0)
 		{
-			m_vCertDer.assign(Event.m_aCertDer.begin(), Event.m_aCertDer.end());
-			m_vKeyDer.assign(Event.m_aKeyDer.begin(), Event.m_aKeyDer.end());
-			str_copy(m_aCertWarning, std::string(Event.m_Error).c_str());
-			m_CertReady = Event.m_Success && !m_vCertDer.empty() && !m_vKeyDer.empty();
+			// All CERT_AND_KEY requests are internal, their completions
+			// never reach FetchEvents. Only the latest request is
+			// honored, completions of superseded requests are dropped.
+			if(Event.m_RequestId != m_CertRequestId)
+			{
+				continue;
+			}
+			m_CertRequestId = 0;
+			if(Event.m_Success && !Event.m_aCertDer.empty() && !Event.m_aKeyDer.empty())
+			{
+				m_vCertDer.assign(Event.m_aCertDer.begin(), Event.m_aCertDer.end());
+				m_vKeyDer.assign(Event.m_aKeyDer.begin(), Event.m_aKeyDer.end());
+				str_copy(m_aCertWarning, std::string(Event.m_Warning).c_str());
+				m_CertReady = true;
+				m_CertFailed = false;
+			}
+			else if(m_CertReady)
+			{
+				// A background refresh failed, keep the old certificate
+				// and try again on the next refresh interval.
+				log_warn("accounts", "certificate refresh failed: %s", std::string(Event.m_Error).c_str());
+			}
+			else
+			{
+				str_copy(m_aCertError, std::string(Event.m_Error).c_str());
+				if(m_aCertError[0] == '\0')
+				{
+					str_copy(m_aCertError, "received an empty certificate");
+				}
+				m_CertFailed = true;
+			}
 			continue;
 		}
 		m_vEvents.push_back(EventFromBridge(Event));
@@ -304,9 +332,11 @@ std::vector<CAccountEvent> CAccountsManager::FetchEvents()
 void CAccountsManager::RequestConnectCert()
 {
 	m_CertReady = false;
+	m_CertFailed = false;
 	m_vCertDer.clear();
 	m_vKeyDer.clear();
 	m_aCertWarning[0] = '\0';
+	m_aCertError[0] = '\0';
 	if(!m_pClient.has_value())
 	{
 		return;
@@ -316,16 +346,23 @@ void CAccountsManager::RequestConnectCert()
 
 void CAccountsManager::TryRefreshCert()
 {
-	if(!m_pClient.has_value())
+	if(!m_pClient.has_value() || !m_CertReady || m_CertRequestId != 0)
 	{
 		return;
 	}
-	// Checking often is unnecessary, the certificate lives for hours.
+	// Checking often is unnecessary, the certificate lives for an hour.
 	const int64_t Now = time_get();
 	if(m_LastCertRefreshTime != 0 && Now - m_LastCertRefreshTime < 60 * time_freq())
 	{
 		return;
 	}
 	m_LastCertRefreshTime = Now;
-	(*m_pClient)->TryRefreshCert();
+	// Refresh in the background before the certificate expires, so a
+	// dummy connect or reconnect always presents a valid certificate.
+	constexpr int64_t REFRESH_MARGIN_SECONDS = 10 * 60;
+	if(accounts::CertExpiresInSeconds(rust::Slice<const uint8_t>(m_vCertDer.data(), m_vCertDer.size())) > REFRESH_MARGIN_SECONDS)
+	{
+		return;
+	}
+	m_CertRequestId = (*m_pClient)->RequestCertAndKey();
 }

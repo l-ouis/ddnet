@@ -25,9 +25,11 @@
 #include <game/client/components/skins7.h>
 #include <game/client/lineinput.h>
 #include <game/client/ui.h>
+#include <game/client/ui_scrollregion.h>
 #include <game/voting.h>
 
 #include <chrono>
+#include <deque>
 #include <optional>
 #include <vector>
 
@@ -593,25 +595,44 @@ protected:
 	// collected in two steps.
 	int m_AccountFlowStep = 0;
 	uint64_t m_AccountRequestId = 0;
-	CLineInputBuffered<128> m_AccountEmailInput;
-	CLineInputBuffered<128> m_AccountLinkEmailInput;
+	// The state a failed request returns to, so the user can retry.
+	EAccountState m_AccountStateBeforeWait = EAccountState::OVERVIEW;
+	CLineInputBuffered<256> m_AccountEmailInput;
+	CLineInputBuffered<256> m_AccountLinkEmailInput;
 	CLineInputBuffered<64> m_AccountTokenInput;
 	char m_aAccountToken[64] = "";
-	char m_aAccountWebUrl[256] = "";
+	// The email address the pending confirmation code was sent to.
+	char m_aAccountFlowEmail[256] = "";
+	// Inline error of the last failed, retryable request.
+	char m_aAccountFlowError[256] = "";
+	char m_aAccountWebUrl[512] = "";
 	char m_aAccountInfoProfileKey[64] = "";
 	int64_t m_AccountInfoId = 0;
 	char m_aAccountInfoCreationDate[64] = "";
 	std::vector<CAccountEvent::CCredential> m_vAccountInfoCredentials;
+	// Grows, never shrinks, so the button addresses used as UI ids stay stable.
+	std::deque<CButtonContainer> m_vAccountProfileButtons;
+	CScrollRegion m_AccountProfilesScrollRegion;
 	void RenderAccount(CUIRect MainView);
 	void RenderAccountOverview(CUIRect MainView);
+	void RenderAccountEmailEnter(CUIRect MainView);
 	void RenderAccountTokenEnter(CUIRect MainView);
+	void RenderAccountWait(CUIRect MainView);
 	void RenderAccountInfo(CUIRect MainView);
+	void RenderAccountFlowError(CUIRect *pMainView);
 	void ProcessAccountEvents();
 	void AccountFlowTokenReceived(const CAccountEvent &Event);
 	void StartAccountFlow(EAccountFlow Flow, const char *pEmail);
+	void StartAccountEmailEnter(EAccountFlow Flow);
+	void StartAccountInfoRequest();
+	void SetAccountWaitState(EAccountState WaitState, EAccountState ReturnState);
+	EAccountState AccountFlowHome() const;
+	void ResetAccountFlow(EAccountState NextState);
 	void AbortAccountFlow();
+	const char *AccountErrorMessage(const CAccountEvent &Event) const;
 	void AccountOpFailed(const CAccountEvent &Event);
 	void PopupConfirmAccountWebValidation();
+	void PopupConfirmAccountDelete();
 	bool RenderHslaScrollbars(CUIRect *pRect, unsigned int *pColor, bool Alpha, float DarkestLight);
 
 	// found in menus_settings_assets.cpp

@@ -890,6 +890,7 @@ set_glob(RUST_ACCOUNTS GLOB "rs;toml" src/accounts
   Cargo.toml
   bridge.rs
   client.rs
+  e2e_test.rs
   game_server.rs
   identity.rs
   lib.rs
@@ -2173,6 +2174,7 @@ set_src(BASE GLOB_RECURSE src/base
 )
 set_src(ENGINE_INTERFACE GLOB src/engine
   # tidy-alphabetical-start
+  accounts.h
   antibot.h
   client.h
   config.h
@@ -2435,6 +2437,8 @@ if(CLIENT)
 
   set_src(ENGINE_CLIENT GLOB_RECURSE src/engine/client
     # tidy-alphabetical-start
+    accounts.cpp
+    accounts.h
     backend/backend_base.cpp
     backend/backend_base.h
     backend/glsl_shader_compiler.cpp
@@ -2457,8 +2461,6 @@ if(CLIENT)
     backend/opengles/opengles_sl_program.cpp
     backend/vulkan/backend_vulkan.cpp
     backend/vulkan/backend_vulkan.h
-    accounts.cpp
-    accounts.h
     backend_sdl.cpp
     backend_sdl.h
     blocklist_driver.cpp

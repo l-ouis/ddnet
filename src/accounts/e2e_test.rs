@@ -10,7 +10,7 @@
 
 use std::time::{Duration, Instant};
 
-use crate::client::{AccountEvent, AccountEventKind, AccountsClient};
+use crate::client::{AccountEvent, AccountsClient};
 use crate::game_server::AccountsGameServer;
 
 const ACCOUNT_SERVER_URL: &str = "http://127.0.0.1:5555";
@@ -119,10 +119,11 @@ fn e2e_cpp_server_login() {
     }
     let event = wait_account_event(&client, client.cert_and_key());
     assert!(event.success);
-    assert!(event.error.is_empty(), "cert warning: {}", event.error);
+    assert!(event.warning.is_empty(), "cert warning: {}", event.warning);
 
     let mut quic = crate::quic::QuicClient::connect(
         addr,
+        String::new(),
         crate::quic::ServerVerification::PubKeyHash(hash),
         event.cert_der,
         event.key_der,
@@ -177,7 +178,7 @@ fn e2e_live() {
     // obtain a certificate signed by the account server
     let event = wait_account_event(&client, client.cert_and_key());
     assert!(event.success);
-    assert!(event.error.is_empty(), "cert warning: {}", event.error);
+    assert!(event.warning.is_empty(), "cert warning: {}", event.warning);
     assert!(!event.cert_der.is_empty());
     assert!(!event.key_der.is_empty());
     let cert_der = event.cert_der.clone();

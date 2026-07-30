@@ -134,6 +134,7 @@ typedef int (*NETFUNC_NEWCLIENT_CON)(int ClientId, void *pUser);
 typedef int (*NETFUNC_NEWCLIENT)(int ClientId, void *pUser, bool Sixup);
 typedef int (*NETFUNC_NEWCLIENT_NOAUTH)(int ClientId, void *pUser);
 typedef int (*NETFUNC_CLIENTREJOIN)(int ClientId, void *pUser);
+typedef int (*NETFUNC_NUMCLIENTSWITHADDR)(const NETADDR *pAddr, void *pUser);
 
 struct CNetChunk
 {
@@ -443,6 +444,10 @@ class CNetServer
 	NETFUNC_DELCLIENT m_pfnDelClient;
 	NETFUNC_CLIENTREJOIN m_pfnClientRejoin;
 	void *m_pUser;
+	// Counts clients of other transports (QUIC) with a given address,
+	// so the per ip limit covers all transports.
+	NETFUNC_NUMCLIENTSWITHADDR m_pfnNumOtherClientsWithAddr = nullptr;
+	void *m_pNumOtherClientsWithAddrUser = nullptr;
 
 	unsigned char m_aSecurityTokenSeed[16];
 
@@ -465,12 +470,19 @@ class CNetServer
 
 	int TryAcceptClient(NETADDR &Addr, SECURITY_TOKEN SecurityToken, bool VanillaAuth = false, bool Sixup = false, SECURITY_TOKEN Token = 0);
 	int NumClientsWithAddr(NETADDR Addr);
-	bool Connlimit(NETADDR Addr);
 	void SendMsgs(NETADDR &Addr, const CPacker **ppMsgs, int Num);
 
 public:
 	int SetCallbacks(NETFUNC_NEWCLIENT pfnNewClient, NETFUNC_DELCLIENT pfnDelClient, void *pUser);
 	int SetCallbacks(NETFUNC_NEWCLIENT pfnNewClient, NETFUNC_NEWCLIENT_NOAUTH pfnNewClientNoAuth, NETFUNC_CLIENTREJOIN pfnClientRejoin, NETFUNC_DELCLIENT pfnDelClient, void *pUser);
+	// Registers a callback that counts the clients of other transports
+	// (QUIC) with a given address, included in the per ip limit.
+	void SetNumOtherClientsWithAddrCallback(NETFUNC_NUMCLIENTSWITHADDR pfnNumOtherClientsWithAddr, void *pUser);
+
+	// Sliding window connect rate limit (sv_connlimit), shared by all
+	// transports. Each call counts as one connect attempt of the address,
+	// `true` means the attempt has to be rejected.
+	bool Connlimit(NETADDR Addr);
 
 	//
 	bool Open(NETADDR BindAddr, CNetBan *pNetBan, int MaxClients, int MaxClientsPerIp);
@@ -511,6 +523,10 @@ public:
 	void SetMaxClientsPerIp(int Max);
 	bool HasErrored(int ClientId);
 	void ResumeOldConnection(int ClientId, int OrigId);
+	// Resets a connection back to offline without dropping the client or
+	// notifying the peer. Used when a QUIC connection takes over the slot
+	// of an errored connection on timeout protection reclaim.
+	void ResetConnection(int ClientId);
 	void IgnoreTimeouts(int ClientId);
 
 	void ResetErrorString(int ClientId);
@@ -626,7 +642,7 @@ public:
 
 	// error and state
 	int NetType() const { return net_socket_type(m_Socket); }
-	int State();
+	int State() const;
 	const NETADDR *ServerAddress() const { return m_Connection.PeerAddress(); }
 	void ConnectAddresses(const NETADDR **ppAddrs, int *pNumAddrs) const { m_Connection.ConnectAddresses(ppAddrs, pNumAddrs); }
 	bool GotProblems(int64_t MaxLatency) const;

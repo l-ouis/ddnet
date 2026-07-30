@@ -212,8 +212,20 @@ public:
 		NETADDR m_QuicAddr = {};
 		std::array<char, NETADDR_MAXSTRSIZE> m_aQuicAddrString = {};
 		std::array<char, NETADDR_MAXSTRSIZE> m_aQuicAddrStringNoPort = {};
+		// Timeout protection for QUIC clients, mirroring the legacy
+		// CNetConnection timeout protection: while a slot is errored,
+		// the peer is gone but the slot stays occupied until it is
+		// reclaimed via CServer::SetTimedOut or the protection expires.
+		bool m_QuicTimeoutProtected = false;
+		bool m_QuicErrored = false;
+		int64_t m_QuicErrorTime = 0;
+		char m_aQuicErrorString[256] = "";
 		// 0 while not logged in to an account, resolved asynchronously
 		int64_t m_AccountId = 0;
+		// Sha256 hash of the public key of the connection certificate,
+		// all zero while unknown. Stable pseudonymous identity also for
+		// QUIC clients without account.
+		unsigned char m_aAccountKeyHash[32] = {};
 
 		bool IncludedInServerInfo() const
 		{
@@ -337,6 +349,7 @@ public:
 	void SetClientDDNetVersion(int ClientId, int DDNetVersion) override;
 	const NETADDR *ClientAddr(int ClientId) const override;
 	int64_t ClientAccountId(int ClientId) const override;
+	const unsigned char *ClientAccountKeyHash(int ClientId) const override;
 	const std::array<char, NETADDR_MAXSTRSIZE> &ClientAddrStringImpl(int ClientId, bool IncludePort) const override;
 	const char *ClientName(int ClientId) const override;
 	const char *ClientClan(int ClientId) const override;
@@ -356,6 +369,7 @@ public:
 	static int NewClientCallback(int ClientId, void *pUser, bool Sixup);
 	static int NewClientNoAuthCallback(int ClientId, void *pUser);
 	static int DelClientCallback(int ClientId, const char *pReason, void *pUser);
+	static int NumQuicClientsWithAddrCallback(const NETADDR *pAddr, void *pUser);
 
 	static int ClientRejoinCallback(int ClientId, void *pUser);
 
@@ -448,6 +462,12 @@ public:
 	void UpdateQuic();
 	void QuicNewClient(const CQuicEvent &Event);
 	void QuicDeleteClient(int ClientId, const char *pReason);
+	// Keeps the slot of a dead QUIC connection occupied for timeout
+	// protection instead of deleting it, see CClient::m_QuicErrored.
+	void QuicClientErrored(int ClientId, const char *pReason);
+	// Clears all per-slot QUIC and account state, including the peer
+	// mapping, pending logins and the legacy slot reservation.
+	void ResetQuicClient(int ClientId);
 
 	void ChangeMap(const char *pMap) override;
 	void ReloadMap() override;
@@ -547,10 +567,31 @@ public:
 	bool CanClientUseCommand(int ClientId, const IConsole::ICommandInfo *pCommand) const;
 	void AuthRemoveKey(int KeySlot);
 	bool ClientPrevIngame(int ClientId) override { return m_aPrevStates[ClientId] == CClient::STATE_INGAME; }
-	const char *GetNetErrorString(int ClientId) override { return m_NetServer.ErrorString(ClientId); }
-	void ResetNetErrorString(int ClientId) override { m_NetServer.ResetErrorString(ClientId); }
+	const char *GetNetErrorString(int ClientId) override
+	{
+		return m_aClients[ClientId].m_Quic ? m_aClients[ClientId].m_aQuicErrorString : m_NetServer.ErrorString(ClientId);
+	}
+	void ResetNetErrorString(int ClientId) override
+	{
+		if(m_aClients[ClientId].m_Quic)
+			m_aClients[ClientId].m_aQuicErrorString[0] = '\0';
+		else
+			m_NetServer.ResetErrorString(ClientId);
+	}
 	bool SetTimedOut(int ClientId, int OrigId) override;
-	void SetTimeoutProtected(int ClientId) override { m_NetServer.IgnoreTimeouts(ClientId); }
+	void SetTimeoutProtected(int ClientId) override
+	{
+		if(m_aClients[ClientId].m_Quic)
+			m_aClients[ClientId].m_QuicTimeoutProtected = true;
+		else
+			m_NetServer.IgnoreTimeouts(ClientId);
+	}
+	// Whether the client's transport is protected against spoofing: QUIC
+	// clients always are, legacy clients if they have a security token.
+	bool ClientSecure(int ClientId) const
+	{
+		return m_aClients[ClientId].m_Quic || m_NetServer.HasSecurityToken(ClientId);
+	}
 
 	void SendMsgRaw(int ClientId, const void *pData, int Size, int Flags) override;
 
